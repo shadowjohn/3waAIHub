@@ -183,6 +183,216 @@ hub_test('service command contract derives runtime fields from the declared Pack
     hub_test_assert(hub_test_throws(static fn (): array => hub_service_command_contract($db, $tampered)), 'runtime contract must reject a database compose path that is not declared by the Pack');
 });
 
+hub_test('Manual Vision runtime actions use isolated WSL one-shots and a credential-free resident API', function (): void {
+    $db = hub_test_reset_db();
+    $service = hub_install_pack($db, 'vlm-manual-vision', ['idempotent' => true, 'provision_runner' => false])['service'];
+    hub_update_service_settings($db, (int)$service['id'], [
+        'MANUAL_VISION_MODEL_REVISION' => str_repeat('a', 40),
+        'HF_TOKEN' => 'private-manual-vision-token',
+    ]);
+    $service = hub_get_service($db, (int)$service['id']);
+    $profile = ['runtime_targets' => ['windows-wsl2-linux-docker' => [
+        'supported' => true,
+        'distro' => 'Ubuntu-24.04',
+        'runtime_root' => '/DATA/3waAIHub-runtime',
+        'models_root' => '/DATA/models',
+        'pack_profiles' => ['vlm-manual-vision' => 'default'],
+    ]]];
+    hub_test_assert(is_array($service), 'Manual Vision service fixture missing');
+    $residentSettings = hub_generate_service_runtime_settings_for_instance($db, $service);
+    hub_test_assert(!str_contains($residentSettings, 'HF_TOKEN=') && !str_contains($residentSettings, 'private-manual-vision-token'), 'resident runtime settings must exclude provision-only tokens');
+    foreach (['manual_vision_provision', 'manual_vision_acceptance'] as $action) {
+        $jobId = hub_enqueue_command_job($db, $action, (int)$service['id'], [], null, '127.0.0.1');
+        $job = hub_get_command_job($db, $jobId);
+        hub_test_assert(($job['status'] ?? '') === 'queued' && ($job['action'] ?? '') === $action, 'Manual Vision one-shot must retain normal command-job bookkeeping');
+    }
+    hub_test_assert(hub_command_job_stale_after_seconds('manual_vision_provision') >= 3600 && hub_command_job_stale_after_seconds('manual_vision_acceptance') >= 1800, 'Manual Vision one-shots must retain long worker leases');
+
+    $decode = static function (array $command): string {
+        preg_match('/printf %s ([A-Za-z0-9+\/=]+)/', (string)end($command), $matches);
+        return isset($matches[1]) ? (string)base64_decode($matches[1], true) : '';
+    };
+
+    $provision = hub_manual_vision_provisioning_plan($db, $service, $profile, 'windows');
+    hub_test_assert(is_array($provision), 'Manual Vision provisioning plan must be available for a ready WSL runtime');
+    $provisionScript = $decode($provision['command']);
+    hub_test_assert(str_contains($provisionScript, 'docker run') && str_contains($provisionScript, '--user 0:0') && str_contains($provisionScript, 'provision.py'), 'Manual Vision provisioning must be an explicit root Docker one-shot');
+    hub_test_assert(str_contains($provisionScript, '/DATA/models/manual-vision:/models/manual-vision') && !str_contains($provisionScript, '/models/manual-vision:ro'), 'Manual Vision provisioning must have the writable model mount');
+    hub_test_assert(str_contains($provisionScript, 'HF_HUB_OFFLINE=0') && str_contains($provisionScript, 'HF_TOKEN'), 'Manual Vision provisioning must explicitly enable its token-backed download');
+    hub_test_assert(!str_contains(implode(' ', $provision['command']), 'private-manual-vision-token'), 'Manual Vision provisioning command/log transport must redact the token');
+    hub_test_assert(!str_contains($provisionScript, 'private-manual-vision-token') && !str_contains($provisionScript, 'token_payload'), 'Manual Vision WSL payload must not embed token bytes');
+    hub_test_assert(!array_key_exists('token', $provision), 'Manual Vision provisioning plans must not return token bytes');
+    hub_test_assert(!str_contains($provisionScript, 'docker compose'), 'Manual Vision provisioning must never invoke the resident compose service');
+    hub_test_assert(str_contains($provisionScript, 'mkdir -p') && !str_contains($provisionScript, 'install -d') && !str_contains($provisionScript, 'chmod ') && !str_contains($provisionScript, 'chown '), 'Manual Vision WSL provision preflight must not mutate existing mount ownership or mode');
+    $provisionEnvironment = hub_manual_vision_provision_environment('private-manual-vision-token', true, 'WSL_INTEROP/u');
+    hub_test_assert(($provisionEnvironment['HF_TOKEN'] ?? '') === 'private-manual-vision-token' && ($provisionEnvironment['WSLENV'] ?? '') === 'WSL_INTEROP/u:HF_TOKEN/w', 'Manual Vision WSL provision must carry the token only through inherited HF_TOKEN and WSLENV');
+
+    $acceptance = hub_manual_vision_acceptance_args($db, $service, $profile, 'windows');
+    hub_test_assert(is_array($acceptance), 'Manual Vision acceptance plan must be available for a ready WSL runtime');
+    $acceptanceScript = $decode($acceptance['command']);
+    hub_test_assert(str_contains($acceptanceScript, 'acceptance.py') && str_contains($acceptanceScript, '--entrypoint /app/entrypoint.sh') && !str_contains($acceptanceScript, '--user 0:0'), 'Manual Vision acceptance must use the resident entrypoint to drop to its unprivileged user');
+    hub_test_assert(str_contains($acceptanceScript, '/models/manual-vision:ro') && str_contains($acceptanceScript, '/cache/manual-vision') && str_contains($acceptanceScript, '/data/service'), 'Manual Vision acceptance mounts must keep models read-only and cache/data writable');
+    hub_test_assert(str_contains($acceptanceScript, ':/demo:ro') && str_contains($acceptanceScript, 'HF_HUB_OFFLINE=1') && str_contains($acceptanceScript, '--network none --entrypoint /app/entrypoint.sh'), 'Manual Vision acceptance must mount the committed demo read-only and stay offline without network access');
+    hub_test_assert(!str_contains($acceptanceScript, 'HF_TOKEN') && !str_contains($acceptanceScript, 'docker compose'), 'Manual Vision acceptance must not receive a token or invoke the resident compose service');
+    hub_test_assert(!array_key_exists('token', $acceptance), 'Manual Vision acceptance plans must not read or return a token');
+    hub_test_assert(str_contains($acceptanceScript, 'mkdir -p') && !str_contains($acceptanceScript, 'install -d') && !str_contains($acceptanceScript, 'chmod ') && !str_contains($acceptanceScript, 'chown ') && !str_contains($acceptanceScript, 'models_root='), 'Manual Vision WSL acceptance preflight must leave post-container mounts untouched');
+
+    if (PHP_OS_FAMILY !== 'Windows' && function_exists('posix_geteuid') && posix_geteuid() === 0) {
+        $mountRoot = sys_get_temp_dir() . '/3waaihub_manual_vision_mounts_' . bin2hex(random_bytes(8));
+        $serviceRoot = $mountRoot . '/service';
+        $mounts = [$mountRoot . '/models', $mountRoot . '/cache', $mountRoot . '/data'];
+        mkdir($mountRoot, 0755);
+        mkdir($serviceRoot, 0700);
+        chown($serviceRoot, 10002);
+        chgrp($serviceRoot, 10002);
+        foreach ($mounts as $mount) {
+            mkdir($mount, 0700);
+            chown($mount, 10001);
+            chgrp($mount, 10001);
+            chmod($mount, 0700);
+        }
+        try {
+            $quoted = implode(' ', array_map('escapeshellarg', $mounts));
+            $residentRoot = escapeshellarg($serviceRoot);
+            $replay = hub_run_command(['bash', '-lc', 'set -eu; setpriv --reuid=10002 --regid=10002 --clear-groups -- bash -c ' . escapeshellarg('mkdir -p ' . $residentRoot . ' ' . $quoted . '; : > ' . $residentRoot . '/settings')], 10);
+            hub_test_assert($replay['exit_code'] === 0, 'ordinary WSL worker must retain its service root while safely reusing post-container Manual Vision mounts: ' . $replay['output']);
+            foreach ($mounts as $mount) {
+                hub_test_assert(fileowner($mount) === 10001 && filegroup($mount) === 10001 && (fileperms($mount) & 0777) === 0700, 're-running Manual Vision preflight must preserve restrictive post-container mount metadata for another worker UID');
+            }
+            hub_test_assert(is_array(hub_manual_vision_provisioning_plan($db, $service, $profile, 'windows')) && is_array(hub_manual_vision_acceptance_args($db, $service, $profile, 'windows')) && is_array(hub_manual_vision_wsl_service_compose_command($service, ['up', '-d'], $profile)), 'Manual Vision re-run, acceptance, and resident start plans must remain constructible after post-container mount ownership');
+        } finally {
+            unlink($serviceRoot . '/settings');
+            chmod($serviceRoot, 0700);
+            rmdir($serviceRoot);
+            foreach (array_reverse($mounts) as $mount) {
+                chmod($mount, 0700);
+                rmdir($mount);
+            }
+            rmdir($mountRoot);
+        }
+    }
+
+    $nativeProvision = hub_manual_vision_provisioning_plan($db, $service, null, 'linux');
+    $nativeAcceptance = hub_manual_vision_acceptance_args($db, $service, null, 'linux');
+    hub_test_assert(is_array($nativeProvision) && is_array($nativeAcceptance), 'Manual Vision must provide native Linux one-shot plans');
+    hub_test_assert(str_contains(implode(' ', $nativeProvision['command']), '--user') && str_contains(implode(' ', $nativeProvision['command']), 'provision.py') && !str_contains(implode(' ', $nativeProvision['command']), '/demo'), 'native provision must bypass the entrypoint as root with no demo mount');
+    $nativeNetwork = array_search('--network', $nativeAcceptance['command'], true);
+    hub_test_assert(str_contains(implode(' ', $nativeAcceptance['command']), 'acceptance.py') && str_contains(implode(' ', $nativeAcceptance['command']), ':/models/manual-vision:ro') && str_contains(implode(' ', $nativeAcceptance['command']), ':/demo:ro') && $nativeNetwork !== false && ($nativeAcceptance['command'][$nativeNetwork + 1] ?? null) === 'none' && !str_contains(implode(' ', $nativeAcceptance['command']), 'HF_TOKEN'), 'native acceptance must stay offline, network-isolated, and mount models/demo read-only');
+
+    $resident = hub_manual_vision_wsl_service_compose_command($service, ['up', '-d'], $profile);
+    $residentScript = $decode($resident);
+    preg_match("/compose_payload='([^']+)'/", $residentScript, $residentPayload);
+    $residentCompose = isset($residentPayload[1]) ? (string)base64_decode($residentPayload[1], true) : '';
+    hub_test_assert(str_contains($residentCompose, '/models/manual-vision:/models/manual-vision:ro'), 'Manual Vision resident API must have a read-only model mount');
+    hub_test_assert(str_contains($residentCompose, 'HF_HUB_OFFLINE: "1"'), 'Manual Vision resident API must stay offline');
+    hub_test_assert(!str_contains($residentScript . $residentCompose, 'HF_TOKEN') && !str_contains($residentScript . $residentCompose, 'provision.py') && !str_contains($residentScript . $residentCompose, 'acceptance.py'), 'normal Manual Vision start must not receive credentials or run lifecycle one-shots');
+    hub_test_assert(str_contains($residentScript, 'mkdir -p "$service_root" "$models_root" "$cache_root" "$service_data"') && !str_contains($residentScript, 'install -d -m 0775 "$service_root" "$models_root" "$cache_root" "$service_data"'), 'Manual Vision WSL resident preflight must not mutate existing post-container mount modes');
+    hub_test_assert(str_contains($residentCompose, 'context: "/DATA/3waAIHub-runtime/packs/vlm-manual-vision/service"') && str_contains($residentCompose, 'dockerfile: "Dockerfile"'), 'Manual Vision WSL compose build must resolve the actual service Dockerfile once');
+
+    $wrongPack = hub_install_pack($db, 'hello', ['service_key' => 'manual-vision-wrong-pack', 'idempotent' => true, 'provision_runner' => false])['service'];
+    hub_test_assert((hub_run_manual_vision_provision_job($db, $wrongPack, [])['stderr'] ?? '') === 'pack_not_supported', 'Manual Vision provision action must reject another Pack');
+    hub_test_assert((hub_run_manual_vision_acceptance_job($db, $wrongPack, [])['stderr'] ?? '') === 'pack_not_supported', 'Manual Vision acceptance action must reject another Pack');
+});
+
+hub_test('command runner opt-in capture bounds Manual Vision output before redaction', function (): void {
+    $token = 'private-manual-vision-token';
+    $script = 'echo str_repeat("x", 4096) . ' . var_export($token, true) . ';';
+    $captured = hub_run_command([PHP_BINARY, '-r', $script], 10, [], 256);
+    hub_test_assert(strlen((string)$captured['stdout']) <= 256 && strlen((string)$captured['output']) <= 256, 'opt-in command capture must retain only a bounded output tail');
+    hub_test_assert(str_contains((string)$captured['stdout'], 'output truncated'), 'bounded command capture must mark retained output');
+    $redacted = hub_manual_vision_redact_result($captured, $token);
+    hub_test_assert(!str_contains((string)$redacted['output'], $token) && str_contains((string)$redacted['output'], '[redacted]'), 'Manual Vision redaction must operate on the bounded captured tail before persistence');
+
+    $boundaryToken = 'secret-boundary-' . str_repeat('Q', 64);
+    $rawLimit = hub_manual_vision_provision_capture_limit($boundaryToken);
+    hub_test_assert($rawLimit >= 12000 + strlen($boundaryToken) + 64, 'provision raw capture must reserve final output, full token, and truncation margin');
+    $marker = "[output truncated; tail retained]\n";
+    $boundary = intdiv(strlen($boundaryToken), 2);
+    $suffix = str_repeat('z', $rawLimit - strlen($marker) - (strlen($boundaryToken) - $boundary) - 1);
+    $crossingScript = 'echo str_repeat("x", 4096) . ' . var_export($boundaryToken, true) . ' . ' . var_export($suffix, true) . ';';
+    $crossingCapture = hub_run_command([PHP_BINARY, '-r', $crossingScript], 10, [], $rawLimit);
+    $trailingFragment = substr($boundaryToken, $boundary);
+    hub_test_assert(str_contains((string)$crossingCapture['stdout'], $trailingFragment), 'raw capture fixture must split the token at its retained-tail boundary');
+    $crossingRedacted = hub_manual_vision_redact_result($crossingCapture, $boundaryToken);
+    foreach (['stdout', 'output'] as $key) {
+        $persisted = (string)$crossingRedacted[$key];
+        hub_test_assert(strlen($persisted) <= 12000 && !str_contains($persisted, $boundaryToken) && !str_contains($persisted, substr($boundaryToken, 0, $boundary)) && !str_contains($persisted, $trailingFragment), 'final persisted Manual Vision ' . $key . ' must retain neither a full token nor a truncation fragment');
+    }
+});
+
+hub_test('Marketplace operator controls queue Manual Vision one-shots only for its service', function (): void {
+    $marketplaceSource = (string)file_get_contents(HUB_ROOT . '/admin/marketplace.php');
+    hub_test_assert(str_contains($marketplaceSource, 'value="provision_manual_vision"') && str_contains($marketplaceSource, 'value="accept_manual_vision"'), 'Marketplace service UI must render both Manual Vision operator controls');
+    $db = hub_test_reset_db();
+    $manual = hub_install_pack($db, 'vlm-manual-vision', ['idempotent' => true, 'provision_runner' => false])['service'];
+    $hello = hub_install_pack($db, 'hello', ['service_key' => 'manual-vision-ui-wrong-pack', 'mode' => 'manual_vision_ui_wrong_pack', 'idempotent' => true, 'provision_runner' => false])['service'];
+    $request = static function (array $post): array {
+        $script = "define('HUB_TESTING', true);"
+            . "\$_SESSION = ['user_id' => 1, 'username' => 'admin', 'csrf_token' => 'manual-vision-ui'];"
+            . "\$_SERVER = ['REQUEST_METHOD' => 'POST', 'REMOTE_ADDR' => '127.0.0.1', 'HTTP_X_REQUESTED_WITH' => 'XMLHttpRequest'];"
+            . '$_POST = ' . var_export($post, true) . ';'
+            . 'require ' . var_export(HUB_ROOT . '/admin/marketplace.php', true) . ';';
+        $path = tempnam(sys_get_temp_dir(), '3waaihub_manual_vision_ui_');
+        if ($path === false || file_put_contents($path, "<?php\n" . $script, LOCK_EX) === false) {
+            throw new RuntimeException('Cannot create Manual Vision Marketplace fixture.');
+        }
+        try {
+            return hub_run_command([PHP_BINARY, $path], 30, ['AIHUB_TEST_DB' => (string)getenv('AIHUB_TEST_DB'), 'AIHUB_TEST_DATA_DIR' => (string)getenv('AIHUB_TEST_DATA_DIR')]);
+        } finally {
+            unlink($path);
+        }
+    };
+    $accepted = $request(['csrf_token' => 'manual-vision-ui', 'service_id' => (string)$manual['id'], 'action' => 'provision_manual_vision']);
+    $payload = json_decode((string)$accepted['stdout'], true);
+    hub_test_assert($accepted['exit_code'] === 0 && is_array($payload) && !empty($payload['ok']) && ($payload['job']['action'] ?? '') === 'manual_vision_provision', 'Marketplace must queue Manual Vision provision through the authenticated operator action');
+    $rejected = $request(['csrf_token' => 'manual-vision-ui', 'service_id' => (string)$hello['id'], 'action' => 'accept_manual_vision']);
+    $payload = json_decode((string)$rejected['stdout'], true);
+    hub_test_assert($rejected['exit_code'] === 0 && is_array($payload) && empty($payload['ok']), 'Marketplace must reject Manual Vision controls for another Pack');
+});
+
+hub_test('command queue admits runtime actions only for runtime-ready Packs', function (): void {
+    $db = hub_test_reset_db();
+    $service = hub_install_pack($db, 'vlm-manual-vision', ['idempotent' => true, 'provision_runner' => false])['service'];
+
+    foreach (['service_start', 'service_restart', 'service_install', 'service_build', 'service_rebuild'] as $action) {
+        $jobId = hub_enqueue_command_job($db, $action, (int)$service['id'], [], null, '127.0.0.1');
+        hub_test_assert($jobId > 0, 'runtime-ready Manual Vision Pack must queue ' . $action);
+    }
+
+    $db->prepare('UPDATE services SET pack_id = :pack_id WHERE id = :id')
+        ->execute([':pack_id' => 'manual-vision-missing-pack', ':id' => (int)$service['id']]);
+    try {
+        hub_enqueue_command_job($db, 'service_start', (int)$service['id'], [], null, '127.0.0.1');
+        hub_test_assert(false, 'missing Pack must not queue a runtime action');
+    } catch (RuntimeException $e) {
+        hub_test_assert($e->getMessage() === 'pack_not_installed', 'missing Pack must use the unavailable Pack error');
+    }
+
+    $ready = hub_install_pack($db, 'hello', ['service_key' => 'manual-vision-queue-ready', 'idempotent' => true])['service'];
+    $jobId = hub_enqueue_command_job($db, 'service_start', (int)$ready['id'], [], null, '127.0.0.1');
+    $job = hub_get_command_job($db, $jobId);
+    hub_test_assert(($job['action'] ?? '') === 'service_start' && (int)($job['service_id'] ?? 0) === (int)$ready['id'], 'ready API Pack runtime action must queue');
+});
+
+hub_test('runtime command Pack admission distinguishes unavailable and unready Pack states', function (): void {
+    foreach ([null, ['status' => 'error', 'manifest' => ['runtime_ready' => true]]] as $pack) {
+        try {
+            hub_command_require_ready_runtime_pack($pack);
+            hub_test_assert(false, 'missing or invalid Pack must not pass runtime command admission');
+        } catch (RuntimeException $e) {
+            hub_test_assert($e->getMessage() === 'pack_not_installed', 'missing or invalid Pack must use the unavailable Pack error');
+        }
+    }
+
+    try {
+        hub_command_require_ready_runtime_pack(['status' => 'ok', 'manifest' => ['runtime_ready' => false]]);
+        hub_test_assert(false, 'synthetic unready Pack must not pass runtime command admission');
+    } catch (RuntimeException $e) {
+        hub_test_assert($e->getMessage() === 'pack_runtime_not_ready', 'unready Pack must retain the runtime-ready error');
+    }
+    hub_command_require_ready_runtime_pack(hub_get_pack('hello'));
+});
+
 hub_test('command queue recovers stale running jobs without touching active long jobs', function (): void {
     $db = hub_test_reset_db();
     $now = '2030-01-01 12:00:00';

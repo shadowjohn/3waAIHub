@@ -961,7 +961,6 @@ function hub_public_api_service_from_contract(string $mode, array $pack, array $
         'url' => hub_public_api_mode_url($mode),
         'execution_type' => (string)($contract['execution_type'] ?? $manifest['execution_type'] ?? ''),
         'runtime_level' => (string)($manifest['runtime_level'] ?? ''),
-        'gpu_required' => (bool)($manifest['hardware']['gpu_required'] ?? false),
         'task_type' => (string)($contract['task_type'] ?? ''),
         'input_fields' => is_array($contract['input']['fields'] ?? null) ? $contract['input']['fields'] : [],
         'output_keys' => array_values(array_map('strval', is_array($output['required_keys'] ?? null) ? $output['required_keys'] : [])),
@@ -973,10 +972,16 @@ function hub_public_api_service_from_contract(string $mode, array $pack, array $
         'error_codes' => array_values(array_map('strval', is_array($contract['errors'] ?? null) ? $contract['errors'] : [])),
         'task_api' => hub_public_api_task_api_refs(is_array($contract['task_api'] ?? null) ? $contract['task_api'] : []),
     ];
+    if (($manifest['id'] ?? '') !== 'vlm-manual-vision') {
+        $service['gpu_required'] = (bool)($manifest['hardware']['gpu_required'] ?? false);
+    }
     foreach (['operations', 'workflow', 'error_table', 'workflow_examples', 'managed_voice_presets', 'generic_voice_exploration'] as $key) {
         if (isset($contract[$key])) {
             $service[$key] = $contract[$key];
         }
+    }
+    if (($manifest['id'] ?? '') === 'vlm-manual-vision') {
+        $service = hub_public_api_manual_vision_without_gpu_disclosure($service);
     }
     $service['examples'] = hub_public_api_examples($service);
     $operationExamples = [];
@@ -1039,6 +1044,21 @@ function hub_public_api_service_from_contract(string $mode, array $pack, array $
     }
 
     return $service;
+}
+
+function hub_public_api_manual_vision_without_gpu_disclosure(array $contract): array
+{
+    foreach ($contract as $key => $value) {
+        if ($key === 'gpu_required') {
+            unset($contract[$key]);
+            continue;
+        }
+        if (is_array($value)) {
+            $contract[$key] = hub_public_api_manual_vision_without_gpu_disclosure($value);
+        }
+    }
+
+    return $contract;
 }
 
 function hub_public_api_services(

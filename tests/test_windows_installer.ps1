@@ -157,6 +157,7 @@ Assert-InstallerContract ($installWslSource -match 'function Test-WslCommand') '
 Assert-InstallerContract ($installWslSource -match 'function Invoke-WslScript') 'WSL installer must send multi-line sync commands through a single WSL-safe payload'
 Assert-InstallerContract ($installWslSource -match 'cp -a "\$source_root/packs/\." "\$runtime_root/packs/"') 'WSL runtime must include the current Pack tree required by the runtime database'
 Assert-InstallerContract ($profileWriterSource -notmatch '(?m)^exit 0\s*$') 'runtime profile writer must return to the WSL installer after writing'
+Assert-InstallerContract ($profileWriterSource -notmatch 'root = \$InstallRoot') 'runtime profile must not serialize a user-profile control-plane path'
 Assert-InstallerContract ($installWslSource -match 'com\.3waaihub\.yolo\.runtime_profile') 'WSL installer must verify the existing YOLO image profile before reuse'
 Assert-InstallerContract ($installWslSource -match 'Get-WslPaliGemma2RuntimeProfile') 'WSL installer must select a PaliGemma 2 runtime profile'
 Assert-InstallerContract ($installWslSource -match 'find "\$runtime_root/packs" -type f.*-print0' -and $installWslSource -match 'IFS= read -r -d') 'WSL pack source sync must preserve filenames without word splitting'
@@ -269,6 +270,9 @@ try {
     Assert-InstallerContract ($pascalRuntimeProfile.runtime_targets.'windows-wsl2-linux-docker'.pack_profiles.'whisper-asr' -eq 'pascal-cu118') 'runtime profile must persist the selected Whisper Pascal profile'
     Assert-InstallerContract ($pascalRuntimeProfile.runtime_targets.'windows-wsl2-linux-docker'.pack_profiles.'ocr-ppocrv5' -eq 'pascal-cu118') 'runtime profile must persist the selected PP-OCRv5 Pascal profile'
     Assert-InstallerContract ($pascalRuntimeProfile.runtime_targets.'windows-wsl2-linux-docker'.pack_profiles.'vlm-paligemma2' -eq 'pascal-cu118') 'runtime profile must persist the selected PaliGemma 2 Pascal profile'
+    Assert-InstallerContract ($pascalRuntimeProfile.runtime_targets.'windows-wsl2-linux-docker'.pack_profiles.'vlm-manual-vision' -eq 'default') 'Manual Vision must retain the existing default CUDA profile'
+    Assert-InstallerContract ($pascalRuntimeProfile.runtime_targets.'windows-wsl2-linux-docker'.models_root -eq '/DATA/models') 'runtime profile must expose only the managed Linux models root'
+    Assert-InstallerContract (($pascalRuntimeProfile | ConvertTo-Json -Depth 8) -notmatch 'HF_TOKEN|Users\\') 'runtime profile must not expose provisioning tokens or a user-profile host path'
 } finally {
     if (Test-Path -LiteralPath $profileRoot) {
         Remove-Item -LiteralPath $profileRoot -Recurse -Force

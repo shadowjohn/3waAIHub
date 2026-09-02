@@ -6,11 +6,25 @@ function hub_test_make_documentable_pack(PDO $db, string $packId, array $state =
     $pack = hub_get_pack($packId);
     hub_test_assert($pack !== null && ($pack['status'] ?? '') === 'ok', 'test Pack unavailable: ' . $packId);
     $manifest = $pack['manifest'];
-    $installed = hub_install_pack($db, $packId, [
-        'service_key' => (string)($state['service_key'] ?? $manifest['install']['default_service_key'] ?? ($packId . '-main')),
-        'idempotent' => true,
-    ]);
-    $service = $installed['service'];
+    if (($manifest['runtime_ready'] ?? null) !== true) {
+        $service = hub_get_service_by_mode($db, 'hello');
+        hub_test_assert(is_array($service), 'contract-only docs fixture requires seeded hello service');
+        $db->prepare('UPDATE services SET pack_id = :pack_id, pack_version = :pack_version, service_key = :service_key, mode = :mode WHERE id = :id')
+            ->execute([
+                ':pack_id' => $packId,
+                ':pack_version' => (string)$manifest['version'],
+                ':service_key' => (string)($state['service_key'] ?? $manifest['install']['default_service_key'] ?? ($packId . '-main')),
+                ':mode' => (string)($state['mode'] ?? $manifest['default_mode']),
+                ':id' => (int)$service['id'],
+            ]);
+        $service = hub_get_service($db, (int)$service['id']) ?: [];
+    } else {
+        $installed = hub_install_pack($db, $packId, [
+            'service_key' => (string)($state['service_key'] ?? $manifest['install']['default_service_key'] ?? ($packId . '-main')),
+            'idempotent' => true,
+        ]);
+        $service = $installed['service'];
+    }
     $stmt = $db->prepare(
         'UPDATE services SET mode = :mode, health_url = :health_url, install_status = :install_status,
             enabled = :enabled, runtime_status = :runtime_status, status = :status WHERE id = :id'
@@ -27,6 +41,132 @@ function hub_test_make_documentable_pack(PDO $db, string $packId, array $state =
 
     return hub_get_service($db, (int)$service['id']) ?: [];
 }
+
+hub_test('Public and Cluster docs expose only the Manual Vision DocVQA contract', function (): void {
+    require_once HUB_ROOT . '/app/public_api_docs.php';
+
+    $db = hub_test_reset_db();
+    hub_test_make_documentable_pack($db, 'vlm-manual-vision');
+    $unaccepted = hub_public_api_manifest($db, static fn (array $service): bool => false)['services'];
+    hub_test_assert(!in_array('manual_vision', array_column($unaccepted, 'mode'), true), 'unaccepted Manual Vision must not publish from compose status alone');
+    $native = array_column(hub_public_api_manifest($db, static fn (array $service): bool => true)['services'], null, 'mode')['manual_vision'] ?? null;
+    hub_test_assert(is_array($native) && ($native['name'] ?? '') === 'English DocVQA', 'native Manual Vision contract name missing');
+    hub_test_assert(array_column($native['operations'] ?? [], 'operation') === ['docvqa'], 'native Manual Vision operation table mismatch');
+    hub_test_assert(($native['operations'][0]['output_constants'] ?? []) === [
+        'mode' => 'manual_vision',
+        'operation' => 'docvqa',
+        'answer_language' => 'en',
+        'contract_revision' => 1,
+    ], 'native Manual Vision output constants mismatch');
+    $nativeFields = array_column($native['input_fields'] ?? [], null, 'name');
+    hub_test_assert(
+        ($nativeFields['image']['mime_types'] ?? []) === ['image/png', 'image/jpeg']
+        && ($nativeFields['question']['max_length'] ?? null) === 400
+        && ($nativeFields['question']['pattern'] ?? '') === '^[\\x20-\\x7E]*[A-Za-z][\\x20-\\x7E]*$',
+        'native Manual Vision request constraints mismatch',
+    );
+    $nativeSerializedFields = array_column(json_decode(json_encode($native, JSON_THROW_ON_ERROR), true, 512, JSON_THROW_ON_ERROR)['input_fields'] ?? [], null, 'name');
+    hub_test_assert(
+        ($nativeSerializedFields['image']['mime_types'] ?? []) === ['image/png', 'image/jpeg']
+        && ($nativeSerializedFields['question']['max_length'] ?? null) === 400
+        && ($nativeSerializedFields['question']['pattern'] ?? '') === '^[\\x20-\\x7E]*[A-Za-z][\\x20-\\x7E]*$',
+        'native serialized Manual Vision contract must preserve request constraints',
+    );
+    hub_test_assert(($native['error_codes'] ?? []) === [
+        'bad_request', 'unsupported_operation', 'bad_image', 'file_too_large', 'missing_token', 'token_mode_not_allowed',
+        'gpu_unavailable', 'model_not_provisioned', 'model_manifest_invalid', 'runtime_not_ready', 'inference_failed', 'gateway_timeout',
+    ], 'native Manual Vision error table mismatch');
+    hub_test_assert(!array_key_exists('gpu_required', $native) && !str_contains(json_encode($native, JSON_THROW_ON_ERROR), 'gpu_required'), 'native Manual Vision contract must not disclose GPU requirements');
+    $pack = hub_get_pack('vlm-manual-vision');
+    hub_test_assert(is_array($pack), 'native Manual Vision sanitizer fixture missing');
+    $maliciousContract = hub_pack_l5_contract($pack['manifest']);
+    $maliciousContract['operations'][0]['nested'] = ['gpu_required' => true];
+    $sanitizedNative = hub_public_api_service_from_contract('manual_vision', $pack, $pack['manifest'], $maliciousContract);
+    hub_test_assert(!str_contains(json_encode($sanitizedNative, JSON_THROW_ON_ERROR), 'gpu_required'), 'native Manual Vision contract must redact nested GPU requirements');
+
+    $previous = getenv('AIHUB_CLUSTER_SECRET_KEY');
+    putenv('AIHUB_CLUSTER_SECRET_KEY=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef');
+    try {
+        hub_set_storage_setting($db, 'AIHUB_CLUSTER_ROUTER_ENABLED', '1');
+        $stationId = hub_cluster_save_paired_station($db, [
+            'station_key' => 'manual_vision_docs',
+            'display_name' => 'Manual Vision Docs',
+            'public_base_url' => 'https://manual-vision.example/aihub',
+            'internal_base_url' => 'https://manual-vision.internal/aihub',
+            'priority' => 1,
+            'enabled' => true,
+            'station_token' => 'manual_vision_docs_token',
+            'modes' => ['manual_vision'],
+        ]);
+        $now = hub_now();
+        $db->prepare('UPDATE cluster_stations SET manifest_json = :manifest, manifest_fetched_at = :now, status_json = :status, status_fetched_at = :now WHERE id = :id')
+            ->execute([
+                ':manifest' => json_encode(['services' => [array_replace($native, [
+                    'gpu_required' => true,
+                    'operations' => [[
+                        'operation' => 'docvqa',
+                        'nested' => ['gpu_required' => true],
+                    ]],
+                ])]], JSON_THROW_ON_ERROR),
+                ':status' => json_encode(['modes' => ['manual_vision']], JSON_THROW_ON_ERROR),
+                ':now' => $now,
+                ':id' => $stationId,
+            ]);
+        $cluster = array_column(hub_cluster_public_manifest($db)['services'], null, 'mode')['manual_vision'] ?? null;
+        hub_test_assert(is_array($cluster) && ($cluster['name'] ?? '') === 'English DocVQA', 'Cluster Manual Vision contract name missing');
+        hub_test_assert(array_column($cluster['operations'] ?? [], 'operation') === ['docvqa'] && ($cluster['error_codes'] ?? []) === ($native['error_codes'] ?? []), 'Cluster Manual Vision operation/error table mismatch');
+        $clusterFields = array_column($cluster['input_fields'] ?? [], null, 'name');
+        hub_test_assert(
+            ($clusterFields['image']['mime_types'] ?? []) === ['image/png', 'image/jpeg']
+            && ($clusterFields['question']['max_length'] ?? null) === 400
+            && ($clusterFields['question']['pattern'] ?? '') === '^[\\x20-\\x7E]*[A-Za-z][\\x20-\\x7E]*$',
+            'Cluster Manual Vision request constraints mismatch',
+        );
+        $clusterSerializedFields = array_column(json_decode(json_encode($cluster, JSON_THROW_ON_ERROR), true, 512, JSON_THROW_ON_ERROR)['input_fields'] ?? [], null, 'name');
+        hub_test_assert(
+            ($clusterSerializedFields['image']['mime_types'] ?? []) === ['image/png', 'image/jpeg']
+            && ($clusterSerializedFields['question']['max_length'] ?? null) === 400
+            && ($clusterSerializedFields['question']['pattern'] ?? '') === '^[\\x20-\\x7E]*[A-Za-z][\\x20-\\x7E]*$',
+            'Cluster serialized Manual Vision contract must preserve request constraints',
+        );
+        hub_test_assert(!array_key_exists('gpu_required', $cluster) && !str_contains(json_encode($cluster, JSON_THROW_ON_ERROR), 'gpu_required'), 'Cluster Manual Vision contract must not disclose GPU requirements');
+        $snapshot = hub_cluster_compact_manifest_snapshot(['services' => [array_replace($native, [
+            'gpu_required' => true,
+            'operations' => [['operation' => 'docvqa', 'nested' => ['gpu_required' => true]]],
+        ])]]);
+        hub_test_assert(is_array($snapshot) && !str_contains(json_encode($snapshot, JSON_THROW_ON_ERROR), 'gpu_required'), 'Manual Vision Cluster snapshot must redact nested GPU requirements');
+
+        foreach ([hub_public_api_docs_html($db, null, static fn (array $service): bool => true), hub_cluster_public_api_docs_html($db)] as $docs) {
+            foreach (['manual_vision', 'English DocVQA', 'docvqa', 'model_not_provisioned', 'gateway_timeout'] as $needle) {
+                hub_test_assert(str_contains($docs, $needle), 'Manual Vision docs missing ' . $needle);
+            }
+            foreach (['google/paligemma', 'HF_TOKEN', 'prompt', '"name": "model"', 'GPU', '/models/'] as $forbidden) {
+                hub_test_assert(!str_contains($docs, $forbidden), 'Manual Vision docs leaked ' . $forbidden);
+            }
+        }
+    } finally {
+        if ($previous === false) {
+            putenv('AIHUB_CLUSTER_SECRET_KEY');
+        } else {
+            putenv('AIHUB_CLUSTER_SECRET_KEY=' . $previous);
+        }
+    }
+});
+
+hub_test('Manual Vision runtime admission allows installation while retaining a synthetic unready regression', function (): void {
+    $db = hub_test_reset_db();
+    $manualVision = hub_install_pack($db, 'vlm-manual-vision', ['idempotent' => true, 'provision_runner' => false]);
+    hub_test_assert(($manualVision['service']['pack_id'] ?? '') === 'vlm-manual-vision', 'runtime-ready Manual Vision Pack must install');
+    try {
+        hub_command_require_ready_runtime_pack(['status' => 'ok', 'manifest' => ['runtime_ready' => false]]);
+        hub_test_assert(false, 'synthetic unready Pack must remain blocked');
+    } catch (RuntimeException $e) {
+        hub_test_assert($e->getMessage() === 'pack_runtime_not_ready', 'synthetic unready Pack must retain its gate');
+    }
+
+    $ready = hub_install_pack($db, 'hello', ['service_key' => 'manual-vision-ready-gate', 'idempotent' => true]);
+    hub_test_assert(($ready['service']['pack_id'] ?? '') === 'hello', 'runtime gate must not block ready API Packs');
+});
 
 function hub_test_public_api_free_port(): int
 {
@@ -1668,6 +1808,55 @@ hub_test('Managed voice preset docs describe candidate persistence and Cluster a
     foreach (['voice_profile_id', 'reference_audio_path', 'VoxCPM2'] as $forbidden) {
         hub_test_assert(!str_contains($operation, $forbidden), 'managed preset operation docs expose internal detail: ' . $forbidden);
     }
+});
+
+hub_test('Manual Vision caller and operator docs preserve the narrow contract', function (): void {
+    $root = (string)file_get_contents(HUB_ROOT . '/README.md');
+    $examples = (string)file_get_contents(HUB_ROOT . '/docs/api_examples.md');
+    $cluster = (string)file_get_contents(HUB_ROOT . '/docs/cluster-router.md');
+    $operations = (string)file_get_contents(HUB_ROOT . '/docs/operations/manual-vision-docvqa.md');
+
+    hub_test_assert(
+        !str_contains($root, '| `manual_vision` | English DocVQA 文件圖片問答 |')
+        && str_contains($root, '尚未執行真實模型/GPU 驗收'),
+        'root README must not present Manual Vision as already hardware-accepted',
+    );
+
+    foreach ([$root, $examples, $cluster, $operations] as $document) {
+        foreach (['manual_vision', 'docvqa', 'English DocVQA'] as $needle) {
+            hub_test_assert(str_contains($document, $needle), 'Manual Vision documentation missing: ' . $needle);
+        }
+    }
+    $section = static function (string $document): string {
+        $start = strpos($document, '## Manual Vision DocVQA');
+        hub_test_assert($start !== false, 'Manual Vision section missing');
+        $tail = substr($document, $start);
+        $end = strpos($tail, "\n## ", 4);
+        return $end === false ? $tail : substr($tail, 0, $end);
+    };
+    foreach ([$section($examples), $section($cluster)] as $document) {
+        hub_test_assert(
+            substr_count($document, '-F "') === 3
+            && str_contains($document, '-F "operation=docvqa"')
+            && str_contains($document, '-F "image=@')
+            && str_contains($document, '-F "question='),
+            'Manual Vision curl example must use only the three strict multipart fields',
+        );
+        hub_test_assert(str_contains($document, '50 MiB'), 'Manual Vision public docs must state the image limit');
+        foreach (['model=', 'profile=', 'path=', 'prompt=', 'max_tokens='] as $forbidden) {
+            hub_test_assert(!str_contains($document, $forbidden), 'Manual Vision public example exposes private control: ' . $forbidden);
+        }
+    }
+    foreach (['answer en {question}', 'not literal OCR', 'PaliGemma2', 'PP-OCRv5', 'pdf2html', '50 MiB', '64', 'manual_vision_provision', 'manual_vision_acceptance', 'HF_TOKEN', '--network none', 'cold', 'warm', 'peak VRAM', '512 MiB', 'CSRF', '3waaihub-manual-vision-main:0.1.0', '3waaihub/vlm-manual-vision:0.1.0', 'raw acceptance JSON', 'sanitized acceptance summary', 'redacted evidence', 'must never enter Git', 'FastAPI endpoint tests were not run', 'Real Docker runtime', 'CUDA/model acceptance', 'does not perform those deployment actions'] as $needle) {
+        hub_test_assert(str_contains($operations, $needle), 'Manual Vision runbook missing: ' . $needle);
+    }
+    hub_test_assert(
+        str_contains($operations, 'only runtime/model-download step allowed network access')
+        && str_contains($operations, 'only step that receives `HF_TOKEN`')
+        && str_contains($operations, 'Image build may use the package network')
+        && !str_contains($operations, 'only online step'),
+        'Manual Vision runbook must distinguish image-build networking from runtime provisioning',
+    );
 });
 
 hub_test('PhaseDX-3.1 old public docs defaults migrate once only', function (): void {

@@ -20,6 +20,8 @@ function hub_allowed_job_actions(): array
         'docker_builder_prune',
         'ollama_model_pull',
         'whisper_pascal_ckip_provision',
+        'manual_vision_provision',
+        'manual_vision_acceptance',
         'paligemma2_provision',
         'paligemma2_acceptance',
     ];
@@ -65,6 +67,8 @@ function hub_command_action_label(string $action): string
         'benchmark_run' => 'Benchmark 測試',
         'ollama_model_pull' => 'Ollama 模型拉取',
         'whisper_pascal_ckip_provision' => '準備 CKIP 字幕資產',
+        'manual_vision_provision' => '準備 Manual Vision 模型',
+        'manual_vision_acceptance' => '執行 Manual Vision 驗收',
         'paligemma2_provision' => '準備 PaliGemma 2 模型',
         'paligemma2_acceptance' => '執行 PaliGemma 2 CUDA 驗收',
         'service_install' => '安裝服務',
@@ -74,6 +78,27 @@ function hub_command_action_label(string $action): string
         'docker_prune_check' => 'Docker 清理檢查',
         'docker_builder_prune' => 'Docker builder 清理',
     ][$action] ?? $action;
+}
+
+function hub_command_action_requires_ready_runtime(string $action): bool
+{
+    return in_array($action, [
+        'service_start',
+        'service_restart',
+        'service_build',
+        'service_install',
+        'service_rebuild',
+    ], true);
+}
+
+function hub_command_require_ready_runtime_pack(?array $pack): void
+{
+    if ($pack === null || ($pack['status'] ?? '') !== 'ok') {
+        throw new RuntimeException('pack_not_installed');
+    }
+    if (($pack['manifest']['runtime_ready'] ?? null) !== true) {
+        throw new RuntimeException('pack_runtime_not_ready');
+    }
 }
 
 function hub_enqueue_command_job(PDO $db, string $action, ?int $serviceId, array $args, ?int $requestedBy, ?string $requestedIp): int
@@ -117,6 +142,9 @@ function hub_enqueue_command_job(PDO $db, string $action, ?int $serviceId, array
         $service = hub_get_service($db, $serviceId);
         if (!$service) {
             throw new InvalidArgumentException('Service not found.');
+        }
+        if (hub_command_action_requires_ready_runtime($action)) {
+            hub_command_require_ready_runtime_pack(hub_get_pack((string)($service['pack_id'] ?? '')));
         }
         if ($action === 'service_remove') {
             $args['service_updated_at'] = (string)($service['updated_at'] ?? '');
@@ -256,6 +284,8 @@ function hub_command_job_stale_after_seconds(string $action): int
         // 依現有 command timeout 加五分鐘緩衝，避免安靜執行的長任務被誤判。
         'ollama_model_pull' => 14700,
         'service_start', 'service_install', 'service_build', 'service_rebuild', 'whisper_pascal_ckip_provision' => 2100,
+        'manual_vision_provision' => 3900,
+        'manual_vision_acceptance' => 2100,
         'paligemma2_provision' => 7500,
         'paligemma2_acceptance' => 900,
         'docker_builder_prune' => 1200,

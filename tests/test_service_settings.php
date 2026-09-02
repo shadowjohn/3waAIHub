@@ -73,6 +73,27 @@ hub_test('service settings defaults are created from pack schema and write env',
     hub_test_assert(!str_contains($env, 'UNDECLARED_ENV='), 'env must not include arbitrary keys');
 });
 
+hub_test('provision-only settings are filtered after shared resident environment values merge', function (): void {
+    $manifest = [
+        'settings_schema' => [
+            ['key' => 'AIHUB_MODELS_DIR', 'provision_only' => true],
+            ['key' => 'SAFE_SETTING', 'provision_only' => false],
+        ],
+        'storage' => ['mounts' => []],
+    ];
+    $storage = [
+        'AIHUB_MODELS_DIR' => '/models/shared',
+        'AIHUB_CACHE_DIR' => '/cache/shared',
+        'AIHUB_UPLOADS_DIR' => '/uploads/shared',
+        'AIHUB_RESULTS_DIR' => '/results/shared',
+        'AIHUB_LOGS_DIR' => '/logs/shared',
+    ];
+    $generated = hub_generate_service_env($manifest, ['AIHUB_MODELS_DIR' => '/models/override', 'SAFE_SETTING' => 'retained'], 'LOCAL_PORT', 18080, '/runtime/service', $storage);
+    hub_test_assert(!str_contains($generated, 'AIHUB_MODELS_DIR=') && str_contains($generated, 'SAFE_SETTING=retained'), 'pack resident env generation must filter a provision-only schema collision after system values merge');
+    $serviceValues = hub_pack_resident_env_values($manifest, array_merge(['AIHUB_MODELS_DIR' => '/models/shared', 'SAFE_SETTING' => 'retained'], ['AIHUB_MODELS_DIR' => '/models/service']));
+    hub_test_assert(!array_key_exists('AIHUB_MODELS_DIR', $serviceValues) && ($serviceValues['SAFE_SETTING'] ?? '') === 'retained', 'service runtime settings filtering must remove a provision-only shared-map collision without changing normal settings');
+});
+
 hub_test('service settings remove keys that the current pack schema no longer declares', function (): void {
     $db = hub_test_reset_db();
     $service = hub_install_pack($db, 'ocr-ppocrv5', [

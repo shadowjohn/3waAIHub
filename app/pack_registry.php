@@ -1815,7 +1815,7 @@ function hub_validate_pack_manifest(array $manifest, string $packDir): array
             $errors[] = 'internal_task runtime requires async_task execution_type.';
         }
     } else {
-        if (!is_file($packDir . '/' . (string)($runtime['compose_file'] ?? ''))) {
+        if (($manifest['runtime_ready'] ?? false) === true && !is_file($packDir . '/' . (string)($runtime['compose_file'] ?? ''))) {
             $errors[] = 'runtime.compose_file not found.';
         }
         if ((int)($runtime['default_internal_port'] ?? 0) <= 0) {
@@ -1892,7 +1892,6 @@ function hub_install_pack(PDO $db, string $packId, array|string|null $options = 
     if (!$pack || $pack['status'] !== 'ok') {
         throw new RuntimeException('HubPack is not available or has validation errors.');
     }
-
     $legacyIdempotent = is_string($options);
     $options = is_string($options) ? ['service_key' => $options, 'idempotent' => true] : ($options ?? []);
     $manifest = $pack['manifest'];
@@ -2149,9 +2148,20 @@ function hub_pack_env_values(array $manifest, array $overrides = []): array
     return $values;
 }
 
+function hub_pack_resident_env_values(array $manifest, array $values): array
+{
+    foreach ((array)($manifest['settings_schema'] ?? []) as $setting) {
+        if (is_array($setting) && !empty($setting['provision_only'])) {
+            unset($values[(string)($setting['key'] ?? '')]);
+        }
+    }
+
+    return $values;
+}
+
 function hub_generate_service_env(array $manifest, array $envValues, string $portEnv, int $localPort, string $runtimeDir, array $storage): string
 {
-    $values = array_merge([
+    $values = hub_pack_resident_env_values($manifest, array_merge([
         $portEnv => (string)$localPort,
         'SERVICE_DATA_DIR' => $runtimeDir,
         'AIHUB_MODELS_DIR' => $storage['AIHUB_MODELS_DIR'],
@@ -2159,7 +2169,7 @@ function hub_generate_service_env(array $manifest, array $envValues, string $por
         'AIHUB_UPLOADS_DIR' => $storage['AIHUB_UPLOADS_DIR'],
         'AIHUB_RESULTS_DIR' => $storage['AIHUB_RESULTS_DIR'],
         'AIHUB_LOGS_DIR' => $storage['AIHUB_LOGS_DIR'],
-    ], hub_pack_storage_runtime_env($manifest), $envValues);
+    ], hub_pack_storage_runtime_env($manifest), $envValues));
 
     $lines = [];
     foreach ($values as $key => $value) {

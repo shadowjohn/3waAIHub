@@ -32,6 +32,8 @@ return [
     __DIR__ . '/../test_service_compose_project.php',
     __DIR__ . '/../test_service_settings.php',
     __DIR__ . '/../test_sqlite_safety.php',
+    __DIR__ . '/../test_manual_vision_pack.php',
+    __DIR__ . '/../test_public_api_docs.php',
     __DIR__ . '/../test_taiwan_address_pack.php',
     __DIR__ . '/../test_windows_core_models_root.php',
 ];

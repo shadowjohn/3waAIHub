@@ -1,0 +1,5 @@
+[
+  {"id": "manual-text", "image": "manual_text_page.png", "question": "What is the shutdown temperature?", "answer": "85 °C"},
+  {"id": "spec-table", "image": "manual_specs_table.png", "question": "What is the rated capacity?", "answer": "1.2 L"},
+  {"id": "labelled-diagram", "image": "manual_labelled_diagram.png", "question": "What component is marked A?", "answer": "Fuse"}
+]

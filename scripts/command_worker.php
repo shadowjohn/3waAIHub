@@ -91,7 +91,7 @@ function hub_execute_command_job(PDO $db, array $job): array
             return ['exit_code' => 3, 'stdout' => '', 'stderr' => 'Service not found.'];
         }
     }
-    if ((str_starts_with($action, 'service_') || in_array($action, ['whisper_pascal_ckip_provision', 'paligemma2_provision', 'paligemma2_acceptance'], true)) && !$service) {
+    if ((str_starts_with($action, 'service_') || in_array($action, ['whisper_pascal_ckip_provision', 'manual_vision_provision', 'manual_vision_acceptance', 'paligemma2_provision', 'paligemma2_acceptance'], true)) && !$service) {
         return ['exit_code' => 3, 'stdout' => '', 'stderr' => 'Service id is required.'];
     }
 
@@ -125,6 +125,8 @@ function hub_execute_command_job(PDO $db, array $job): array
         'docker_builder_prune' => hub_run_command(['docker', 'builder', 'prune', '-af'], 900),
         'ollama_model_pull' => hub_run_ollama_model_pull_job($db, $service, $job),
         'whisper_pascal_ckip_provision' => hub_run_whisper_pascal_ckip_provision_job($db, $service, $job),
+        'manual_vision_provision' => hub_run_manual_vision_provision_job($db, $service, $job),
+        'manual_vision_acceptance' => hub_run_manual_vision_acceptance_job($db, $service, $job),
         'paligemma2_provision' => hub_run_paligemma2_provision_job($db, $service, $job),
         'paligemma2_acceptance' => hub_run_paligemma2_acceptance_job($db, $service, $job),
         'benchmark_run' => ['exit_code' => 4, 'stdout' => '', 'stderr' => 'benchmark_run is not implemented in PhaseB local hardening.'],

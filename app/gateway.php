@@ -260,7 +260,10 @@ function hub_gateway_dispatch(PDO $db, string $mode, ?callable $requester = null
     }
     $isAudioSync = hub_audio_sync_route($service) !== null;
     if (!$isAudioSync && !hub_service_upload_size_allowed($service, (string)($rawBody === null ? $_SERVER['CONTENT_LENGTH'] ?? '' : strlen($rawBody)))) {
-        return hub_gateway_finish($db, $service, $mode, hub_gateway_error(413, 'payload_too_large', 'request body is larger than this service allows'), $started, $requestId, $authContext, $requestContext);
+        $errorCode = $mode === 'manual_vision' && (string)($service['pack_id'] ?? '') === 'vlm-manual-vision'
+            ? 'file_too_large'
+            : 'payload_too_large';
+        return hub_gateway_finish($db, $service, $mode, hub_gateway_error(413, $errorCode, 'request body is larger than this service allows'), $started, $requestId, $authContext, $requestContext);
     }
 
     $timeoutSec = hub_service_gateway_timeout_sec($service);
