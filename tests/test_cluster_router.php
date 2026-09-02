@@ -2553,6 +2553,65 @@ hub_test('cluster node publishes Gemma photo modes as an inseparable pair', func
     );
 });
 
+hub_test('cluster node hides a mode that is unavailable in its health snapshot', function (): void {
+    hub_test_with_cluster_secret(function (): void {
+        $db = hub_test_reset_db();
+        $db->prepare(
+            "UPDATE services
+             SET service_key = 'bioclip-main', pack_id = 'bioclip', mode = 'bioclip', enabled = 1,
+                 install_status = 'installed', status = 'running', runtime_status = 'running',
+                 health_url = 'http://127.0.0.1:18111/health', updated_at = :updated_at
+             WHERE mode = 'hello'"
+        )->execute([':updated_at' => hub_now()]);
+        $service = hub_get_service_by_mode($db, 'bioclip');
+        hub_test_assert($service !== null, 'BioCLIP fixture service must exist');
+        hub_cluster_node_configure($db, true, ['bioclip']);
+        hub_service_health_write_snapshot($db, static function (array $services) use ($service): array {
+            return [(int)$service['id'] => ['status' => 503, 'body' => '{"ok":false}', 'curl_result' => CURLE_OK]];
+        });
+
+        $payload = hub_cluster_status_payload($db);
+
+        hub_test_assert(!in_array('bioclip', $payload['modes'], true), 'cluster status must not publish a health-failed BioCLIP mode');
+    });
+});
+
+hub_test('cluster service health reads a fresh eligible station without refresh fanout', function (): void {
+    hub_test_with_cluster_secret(function (): void {
+        $db = hub_test_reset_db();
+        hub_set_storage_setting($db, 'AIHUB_CLUSTER_ROUTER_ENABLED', '1');
+        $station = hub_test_cluster_router_station($db, ['station_key' => 'health_snapshot_station']);
+        $db->prepare(
+            'UPDATE cluster_stations
+             SET manifest_json = :manifest_json, manifest_fetched_at = :fetched_at,
+                 status_json = :status_json, status_fetched_at = :fetched_at, last_error = \'\'
+             WHERE id = :id'
+        )->execute([
+            ':manifest_json' => json_encode(['services' => [['mode' => 'bioclip']]], JSON_THROW_ON_ERROR),
+            ':status_json' => json_encode(['modes' => ['bioclip'], 'gpu' => ['memory_free_mb' => 4096]], JSON_THROW_ON_ERROR),
+            ':fetched_at' => hub_now(),
+            ':id' => (int)$station['id'],
+        ]);
+        $token = hub_test_cluster_router_customer_token($db, ['service_health', 'bioclip']);
+        $refreshes = 0;
+
+        $response = hub_cluster_dispatch($db, 'service_health', hub_test_cluster_router_request((string)$token['plain_token'], [
+            'method' => 'GET',
+            'query' => ['services' => 'bioclip'],
+        ]), [
+            'refresh_due' => static function () use (&$refreshes): array {
+                $refreshes++;
+
+                return [];
+            },
+        ]);
+
+        hub_test_assert($response['status'] === 200 && str_contains($response['body'], '"ready":true'), 'Router must report an eligible cached BioCLIP station as ready');
+        hub_test_assert($refreshes === 0, 'Router health must not trigger station refresh fanout');
+        hub_test_assert(!str_contains($response['body'], 'health_snapshot_station'), 'Router health must not reveal station identity');
+    });
+});
+
 hub_test('cluster public manifest hides unpaired photo contracts', function (): void {
     hub_test_with_cluster_secret(function (): void {
         $db = hub_test_reset_db();

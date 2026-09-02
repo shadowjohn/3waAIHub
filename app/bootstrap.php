@@ -76,6 +76,7 @@ require_once __DIR__ . '/voice_preset_engines.php';
 require_once __DIR__ . '/voice_profile_tasks.php';
 require_once __DIR__ . '/voice_presets.php';
 require_once __DIR__ . '/photo_assets.php';
+require_once __DIR__ . '/service_health.php';
 require_once __DIR__ . '/cluster_photo_assets.php';
 require_once __DIR__ . '/audio_assets.php';
 require_once __DIR__ . '/customer_accounts.php';

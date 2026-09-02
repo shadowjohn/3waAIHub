@@ -15,6 +15,8 @@ COMMAND_LOCK_FILE="${COMMAND_WORKER_LOCK_FILE:-$RUNTIME_DATA_ROOT/jobs/command_w
 TASK_LOCK_FILE="${TASK_WORKER_LOCK_FILE:-$RUNTIME_DATA_ROOT/jobs/command_worker_1min.lock}"
 CLUSTER_REFRESH_LOCK_FILE="${CLUSTER_REFRESH_LOCK_FILE:-$RUNTIME_DATA_ROOT/jobs/cluster_refresh_1min.lock}"
 CLUSTER_REFRESH_LOG_PATH="${CLUSTER_REFRESH_LOG_PATH:-$RUNTIME_DATA_ROOT/logs/cluster_refresh_1min.log}"
+SERVICE_HEALTH_LOCK_FILE="${SERVICE_HEALTH_LOCK_FILE:-$RUNTIME_DATA_ROOT/jobs/service_health_1min.lock}"
+SERVICE_HEALTH_LOG_PATH="${SERVICE_HEALTH_LOG_PATH:-$RUNTIME_DATA_ROOT/logs/service_health_1min.log}"
 WORKER_LIMIT="${WORKER_LIMIT:-5}"
 TASK_WORKER_LIMIT="${TASK_WORKER_LIMIT:-5}"
 CALLBACK_WORKER_LIMIT="${CALLBACK_WORKER_LIMIT:-5}"
@@ -121,6 +123,16 @@ if ! {
   php "$APP_ROOT/scripts/facebook_profile_cleanup.php" --limit=10 >> "$RUNTIME_DATA_ROOT/logs/facebook-profile-cleanup.log" 2>&1;
 }; then
   echo "[3waAIHub] Facebook profile login cleanup failed."
+fi
+
+exec 6>"$SERVICE_HEALTH_LOCK_FILE"
+if flock -n 6; then
+  if ! php "$APP_ROOT/scripts/service_health_snapshot.php" 2>&1 | tee -a "$SERVICE_HEALTH_LOG_PATH"; then
+    echo "[3waAIHub] service health snapshot failed."
+  fi
+  flock -u 6
+else
+  echo "[3waAIHub] service health snapshot already running; skip."
 fi
 
 exec 7>"$CLUSTER_REFRESH_LOCK_FILE"

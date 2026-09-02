@@ -24,12 +24,14 @@ $taskModes = hub_task_api_modes();
 $yoloModelModes = hub_yolo_model_api_modes();
 $photoModes = hub_photo_modes();
 $audioModes = hub_audio_modes();
+$serviceHealthModes = hub_service_health_permission_modes();
 $shownModes = array_fill_keys(array_merge(
     array_column($services, 'mode'),
     array_keys($taskModes),
     array_keys($yoloModelModes),
     array_keys($photoModes),
     array_keys($audioModes),
+    array_keys($serviceHealthModes),
 ), true);
 $asyncPackModes = array_filter(
     hub_pack_job_async_routes(),
@@ -68,6 +70,10 @@ hub_admin_header('Token Mode 權限', $user);
         <?php endforeach; ?>
         <h2>Audio Mode（音訊理解）</h2>
         <?php foreach ($audioModes as $mode => $label): ?>
+            <label><input type="checkbox" name="modes[]" value="<?= hub_h($mode) ?>"<?= in_array($mode, $enabledModes, true) ? ' checked' : '' ?>> <code><?= hub_h($mode) ?></code> <?= hub_h($label) ?></label>
+        <?php endforeach; ?>
+        <h2>Service Health Mode（服務可用性預判）</h2>
+        <?php foreach ($serviceHealthModes as $mode => $label): ?>
             <label><input type="checkbox" name="modes[]" value="<?= hub_h($mode) ?>"<?= in_array($mode, $enabledModes, true) ? ' checked' : '' ?>> <code><?= hub_h($mode) ?></code> <?= hub_h($label) ?></label>
         <?php endforeach; ?>
         <?php if ($asyncPackModes !== []): ?>

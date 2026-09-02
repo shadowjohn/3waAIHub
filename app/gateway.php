@@ -25,6 +25,23 @@ function hub_gateway_dispatch(PDO $db, string $mode, ?callable $requester = null
     if ($mode === 'voice_generate_breezy') {
         return hub_gateway_finish($db, null, $mode, hub_gateway_error(404, 'unknown_mode', 'mode is not registered'), $started, $requestId, [], $requestContext);
     }
+    if ($mode === 'service_health') {
+        if ($requestMethod !== 'GET') {
+            return hub_gateway_finish($db, null, $mode, hub_gateway_error(405, 'method_not_allowed', 'service health requires GET'), $started, $requestId, [], $requestContext);
+        }
+        $query = array_key_exists('query', $internalRequest) ? $internalRequest['query'] : $_GET;
+        $requestedModes = is_array($query) ? hub_service_health_requested_modes($query['services'] ?? null) : null;
+        if ($requestedModes === null) {
+            return hub_gateway_finish($db, null, $mode, hub_gateway_error(400, 'bad_request', 'services must be a supported comma-separated list'), $started, $requestId, [], $requestContext);
+        }
+        $auth = hub_service_health_authenticate($db, $clientIp, $providedToken, $requestedModes);
+        $authContext = $auth['context'] ?? [];
+        if (empty($auth['ok'])) {
+            return hub_gateway_finish($db, null, $mode, $auth['response'], $started, $requestId, $authContext, $requestContext);
+        }
+
+        return hub_gateway_finish($db, null, $mode, hub_gateway_json(200, hub_service_health_local_payload($db, $requestedModes)), $started, $requestId, $authContext, $requestContext);
+    }
     if (in_array($mode, ['facebook_profile_frame', 'facebook_profile_input', 'facebook_profile_login_status', 'facebook_profile_close'], true)) {
         $relay = hub_facebook_login_relay_dispatch(
             $db,

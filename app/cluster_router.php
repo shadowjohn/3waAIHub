@@ -1344,6 +1344,47 @@ function hub_cluster_router_available_modes(PDO $db): array
     return array_keys($modes);
 }
 
+function hub_cluster_service_health_payload(PDO $db, array $requestedModes): array
+{
+    $contracts = hub_service_health_contracts();
+    $available = array_fill_keys($requestedModes, false);
+    $latestCheckedAt = 0;
+    foreach (hub_cluster_list_stations($db) as $station) {
+        $inventory = hub_cluster_station_inventory($station);
+        if (empty($inventory['enabled']) || empty($inventory['fresh'])) {
+            continue;
+        }
+        $checkedAt = strtotime((string)($station['status_fetched_at'] ?? ''));
+        if ($checkedAt !== false) {
+            $latestCheckedAt = max($latestCheckedAt, $checkedAt);
+        }
+        $modes = is_array($inventory['modes'] ?? null) ? $inventory['modes'] : [];
+        foreach ($requestedModes as $mode) {
+            if ($mode === 'photo') {
+                $available[$mode] = $available[$mode] || hub_cluster_photo_modes_are_paired($modes);
+                continue;
+            }
+            $available[$mode] = $available[$mode] || in_array($mode, $modes, true);
+        }
+    }
+    $services = [];
+    foreach ($requestedModes as $mode) {
+        $ready = !empty($available[$mode]);
+        $services[$mode] = [
+            'ready' => $ready,
+            'runtime_status' => $ready ? 'running' : 'stopped',
+            'reason' => $ready ? '' : 'runtime_not_ready',
+            'model' => $contracts[$mode]['model'],
+        ];
+    }
+
+    return [
+        'ok' => true,
+        'checked_at' => date(DATE_ATOM, $latestCheckedAt > 0 ? $latestCheckedAt : time()),
+        'services' => $services,
+    ];
+}
+
 function hub_cluster_public_docs_example(string $value, string $routerUrl): string
 {
     $routerUrl = trim($routerUrl);
@@ -1362,6 +1403,7 @@ function hub_cluster_public_api_docs_html(PDO $db): string
     $services = is_array($manifest['services'] ?? null) ? $manifest['services'] : [];
     $apiUrl = hub_public_api_base_url();
     $routerUrl = preg_replace('~api\.php\z~', 'cluster_api.php', $apiUrl) ?: 'cluster_api.php';
+    $serviceHealth = hub_public_api_service_health_docs($apiUrl, $routerUrl);
     $example = static fn (string $value): string => hub_cluster_public_docs_example($value, $routerUrl);
     $json = static fn (mixed $value): string => (string)json_encode($value, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
     ob_start();
@@ -1449,6 +1491,14 @@ function hub_cluster_public_api_docs_html(PDO $db): string
     <section class="contract-block" aria-labelledby="async-task-contract">
         <h2 id="async-task-contract">Async task, result, artifact, and ACK contract</h2>
         <pre><?= hub_h($json($manifest['async_task_contract'] ?? [])) ?></pre>
+    </section>
+
+    <section class="contract-block" aria-labelledby="service-health-contract">
+        <h2 id="service-health-contract">Service health</h2>
+        <p>Read the Router's cached node eligibility before sending BioCLIP or Gemma Photo work. The query never fans out to child stations.</p>
+        <div class="contract-block"><h3>curl</h3><pre><?= hub_h((string)$serviceHealth['cluster_curl']) ?></pre></div>
+        <div class="contract-block"><h3>Response example</h3><pre><?= hub_h((string)$serviceHealth['response']) ?></pre></div>
+        <div class="contract-block"><h3>Authorization and unavailable reasons</h3><pre><?= hub_h('service_health + requested mode permissions; ' . implode(', ', (array)$serviceHealth['reasons'])) ?></pre></div>
     </section>
 
     <?php if ($services === []): ?>
@@ -1580,6 +1630,23 @@ function hub_cluster_dispatch(PDO $db, string $mode, array $request = [], array 
 
     $clientIp = trim((string)($request['client_ip'] ?? hub_get_client_ip())) ?: hub_get_client_ip();
     $providedToken = array_key_exists('bearer_token', $request) ? (string)$request['bearer_token'] : hub_bearer_token_from_request();
+    if ($mode === 'service_health') {
+        $requestMethod = strtoupper(trim((string)($request['method'] ?? 'GET'))) ?: 'GET';
+        if ($requestMethod !== 'GET') {
+            return $finish(hub_gateway_error(405, 'method_not_allowed', 'service health requires GET'));
+        }
+        $query = is_array($request['query'] ?? null) ? $request['query'] : [];
+        $requestedModes = hub_service_health_requested_modes($query['services'] ?? null);
+        if ($requestedModes === null) {
+            return $finish(hub_gateway_error(400, 'bad_request', 'services must be a supported comma-separated list'));
+        }
+        $auth = hub_service_health_authenticate($db, $clientIp, $providedToken, $requestedModes);
+        if (empty($auth['ok'])) {
+            return $finish($auth['response']);
+        }
+
+        return $finish(hub_gateway_json(200, hub_cluster_service_health_payload($db, $requestedModes)));
+    }
     $auth = hub_authenticate_api_token($db, $clientIp, $providedToken, $mode);
     if (empty($auth['ok'])) {
         return $finish($auth['response']);
@@ -4734,7 +4801,7 @@ function hub_cluster_status_payload(PDO $db, ?array $release = null): array
     $running = $db->query("SELECT COUNT(*) FROM tasks WHERE status = 'running'")->fetchColumn();
     $release ??= hub_release_node_report($db);
     $childrenCount = (int)$db->query('SELECT COUNT(*) FROM cluster_stations')->fetchColumn();
-    $publishedModes = hub_cluster_node_selected_published_modes($db);
+    $publishedModes = hub_cluster_node_ready_published_modes($db);
 
     $payload = [
         'ok' => true,
@@ -4835,6 +4902,21 @@ function hub_cluster_node_selected_published_modes(PDO $db, ?array $selectedMode
     $available = array_fill_keys(hub_cluster_node_published_modes($db), true);
 
     return array_values(array_filter($selectedModes, static fn (string $mode): bool => isset($available[$mode])));
+}
+
+function hub_cluster_node_ready_published_modes(PDO $db, ?array $selectedModes = null, ?array $healthSnapshot = null): array
+{
+    $modes = hub_cluster_node_selected_published_modes($db, $selectedModes);
+    $health = hub_service_health_public_payload($healthSnapshot ?? hub_service_health_read_snapshot() ?? [], ['bioclip', 'photo']);
+    $ready = is_array($health['services'] ?? null) ? $health['services'] : [];
+    if (in_array('bioclip', $modes, true) && (($ready['bioclip']['ready'] ?? null) !== true)) {
+        $modes = array_values(array_filter($modes, static fn (string $mode): bool => $mode !== 'bioclip'));
+    }
+    if (array_intersect(hub_cluster_photo_modes(), $modes) !== [] && (($ready['photo']['ready'] ?? null) !== true)) {
+        $modes = array_values(array_filter($modes, static fn (string $mode): bool => !hub_cluster_is_photo_mode($mode)));
+    }
+
+    return $modes;
 }
 
 function hub_cluster_node_selected_modes(PDO $db): array

@@ -47,6 +47,48 @@ function hub_public_api_mode_url(string $mode): string
     return hub_public_api_base_url() . '?mode=' . rawurlencode($mode);
 }
 
+function hub_public_api_service_health_docs(?string $apiUrl = null, ?string $clusterUrl = null): array
+{
+    $apiUrl ??= hub_public_api_base_url();
+    $clusterUrl ??= (preg_replace('~api\.php\z~', 'cluster_api.php', $apiUrl) ?: 'cluster_api.php');
+    $query = '?mode=service_health&services=bioclip%2Cphoto';
+    $response = [
+        'ok' => true,
+        'checked_at' => '2026-09-02T11:20:00+08:00',
+        'services' => [
+            'bioclip' => [
+                'ready' => true,
+                'runtime_status' => 'running',
+                'reason' => '',
+                'model' => 'BioCLIP-2',
+            ],
+            'photo' => [
+                'ready' => false,
+                'runtime_status' => 'stopped',
+                'reason' => 'service_disabled',
+                'model' => 'gemma4-12b',
+            ],
+        ],
+    ];
+
+    return [
+        'local_url' => $apiUrl . $query,
+        'cluster_url' => $clusterUrl . $query,
+        'local_curl' => 'curl -sS -H "Authorization: Bearer <TOKEN>" ' . escapeshellarg($apiUrl . $query),
+        'cluster_curl' => 'curl -sS -H "Authorization: Bearer <TOKEN>" ' . escapeshellarg($clusterUrl . $query),
+        'response' => json_encode($response, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE),
+        'reasons' => [
+            'service_not_found',
+            'service_disabled',
+            'service_not_installed',
+            'runtime_not_ready',
+            'health_check_failed',
+            'health_timeout',
+            'token_mode_denied',
+        ],
+    ];
+}
+
 function hub_public_api_method(array $manifest, array $contract): string
 {
     $method = (string)($contract['method'] ?? '');
@@ -1573,6 +1615,7 @@ function hub_public_api_docs_html(PDO $db, ?array $user = null, ?callable $healt
 {
     $services = hub_public_api_services($db, $healthProbe);
     $packIds = array_fill_keys(array_column($services, 'pack_id'), true);
+    $serviceHealth = hub_public_api_service_health_docs();
     $t = static fn (string $value): string => hub_h(hub_i18n_text($value));
     ob_start();
     ?>
@@ -1637,6 +1680,23 @@ function hub_public_api_docs_html(PDO $db, ?array $user = null, ?callable $healt
         <?php else: ?>
             <p><?php foreach ($services as $service): ?><code><?= hub_h((string)$service['mode']) ?></code> <?php endforeach; ?></p>
         <?php endif; ?>
+    </section>
+    <section id="service-health" class="panel">
+        <div class="section-title">
+            <h2>Service health / <?= $t('服務可用性') ?></h2>
+            <span class="muted">cached node snapshot</span>
+        </div>
+        <p><?= $t('先以服務健康快照判斷 BioCLIP 與 Gemma Photo 是否可送出推論。查詢不會載入模型、執行推論、啟停服務或探測外部位址。') ?></p>
+        <p><code>service_health</code> <?= $t('權限必填；查詢') ?> <code>bioclip</code> <?= $t('還需要') ?> <code>bioclip</code> <?= $t('權限，查詢') ?> <code>photo</code> <?= $t('還需要') ?> <code>photo_upload</code> <?= $t('與') ?> <code>photo</code> <?= $t('權限。') ?></p>
+        <h3><?= $t('本機 curl') ?></h3>
+        <pre><?= hub_h((string)$serviceHealth['local_curl']) ?></pre>
+        <h3>Cluster curl</h3>
+        <pre><?= hub_h((string)$serviceHealth['cluster_curl']) ?></pre>
+        <h3><?= $t('回應範例') ?></h3>
+        <pre><?= hub_h((string)$serviceHealth['response']) ?></pre>
+        <h3><?= $t('不可用原因') ?></h3>
+        <pre><?= hub_h(implode(', ', (array)$serviceHealth['reasons'])) ?></pre>
+        <p><?= $t('HTTP 200 只表示查詢成功；個別服務以') ?> <code>ready=false</code> <?= $t('表示不可用。NatureWeb 僅在') ?> <code>ready=true</code> <?= $t('時送出該模型；健康檢查後若服務停用，該項標記為') ?> <code>SKIPPED / model_not_ready</code> <?= $t('，整筆辨識仍可完成。') ?></p>
     </section>
     <section class="grid">
         <?php foreach ($services as $service): ?>

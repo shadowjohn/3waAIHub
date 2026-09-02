@@ -114,6 +114,20 @@ function hub_test_public_api_stop_servers(array $servers): void
     }
 }
 
+hub_test('Public API docs describe cached service health without an internal endpoint', function (): void {
+    require_once HUB_ROOT . '/app/public_api_docs.php';
+    $db = hub_test_reset_db();
+
+    $html = hub_public_api_docs_html($db, null, static fn (array $service): bool => true);
+
+    hub_test_assert(str_contains($html, 'api.php?mode=service_health&amp;services=bioclip%2Cphoto'), 'docs must include the local service health request');
+    hub_test_assert(str_contains($html, 'cluster_api.php?mode=service_health&amp;services=bioclip%2Cphoto'), 'docs must include the Cluster service health request');
+    hub_test_assert(str_contains($html, 'Authorization: Bearer &lt;TOKEN&gt;'), 'docs must include Bearer authorization');
+    hub_test_assert(str_contains($html, 'token_mode_denied'), 'docs must document the health authorization boundary');
+    hub_test_assert(str_contains($html, '&quot;ready&quot;: true'), 'docs must include a service health response example');
+    hub_test_assert(!str_contains($html, 'health_url'), 'docs must not disclose health endpoint configuration');
+});
+
 hub_test('Public API production health batch requires completed direct loopback transfers', function (): void {
     if (hub_platform_id() !== 'linux' || !function_exists('curl_multi_init') || !function_exists('proc_open')) {
         hub_test_skip('real curl_multi loopback test requires Linux, cURL multi, and proc_open');
