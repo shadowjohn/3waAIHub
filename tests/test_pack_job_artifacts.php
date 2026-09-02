@@ -249,7 +249,7 @@ function hub_test_artifact_breezy_fixture(PDO $db): array
     $route = array_replace($contract, [
         'requested_mode' => 'voice_generate_breezy',
         'pack_id' => 'tts-breezyvoice',
-        'pack_version' => '0.1.0',
+        'pack_version' => '0.1.1',
         'job' => 'synthesize',
         'job_contract_json' => $snapshot['json'],
         'job_contract_digest' => $snapshot['digest'],
@@ -341,7 +341,7 @@ hub_test('BreezyVoice artifact seam registers exact generated WAV bytes and reje
                 && is_array($audioArtifact)
                 && ($audioArtifact['sha256'] ?? '') === hash('sha256', $audio)
                 && (int)($audioArtifact['size_bytes'] ?? -1) === strlen($audio),
-                'BreezyVoice must register the exact generated 24 kHz mono PCM16 WAV bytes'
+                'BreezyVoice must register the exact generated 22.05 kHz mono PCM16 WAV bytes'
             );
             continue;
         }

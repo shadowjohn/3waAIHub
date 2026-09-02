@@ -109,7 +109,7 @@ function hub_test_gpu_breezy_task(PDO $db): array
     $route = array_replace($contract, [
         'requested_mode' => 'voice_generate_breezy',
         'pack_id' => 'tts-breezyvoice',
-        'pack_version' => '0.1.0',
+        'pack_version' => '0.1.1',
         'job' => 'synthesize',
         'job_contract_json' => $snapshot['json'],
         'job_contract_digest' => $snapshot['digest'],
