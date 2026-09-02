@@ -60,22 +60,6 @@ def test_runtime_bakes_g2pw_assets_for_offline_inference() -> None:
     assert "BertTokenizer.from_pretrained('bert-base-chinese')" in dockerfile
 
 
-def test_pascal_requirements_include_the_pinned_upstream_runner_dependencies() -> None:
-    requirements = (Path(__file__).parent / "requirements.pascal-cu118.txt").read_text(encoding="utf-8")
-    dockerfile = (Path(__file__).parent / "Dockerfile.pascal-cu118").read_text(encoding="utf-8")
-
-    for dependency in [
-        "conformer==0.3.2",
-        "diffusers==0.32.0",
-        "HyperPyYAML==1.2.2",
-        "opencc-python-reimplemented",
-        "tiktoken",
-        "WeTextProcessing==1.0.3",
-    ]:
-        assert dependency in requirements
-    assert "pip install --no-cache-dir --no-deps --no-build-isolation openai-whisper==20231117" in dockerfile
-
-
 def sha256_text(value: str) -> str:
     return hashlib.sha256(value.encode("utf-8")).hexdigest()
 

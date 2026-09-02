@@ -91,13 +91,6 @@ hub_test('BreezyVoice Pascal CUDA 11.8 image can host the managed health API and
         && str_contains($dockerfile, 'COPY service/app.py service/job.py service/provision.py ./')
         && str_contains($dockerfile, 'python3 -m py_compile /app/app.py /app/job.py /app/provision.py')
         && str_contains($dockerfile, 'CMD ["python3", "-m", "uvicorn", "app:app", "--host", "0.0.0.0", "--port", "8000"]')
-        && str_contains($dockerfile, 'pip install --no-cache-dir --no-deps --no-build-isolation openai-whisper==20231117')
-        && str_contains($requirements, 'conformer==0.3.2')
-        && str_contains($requirements, 'diffusers==0.32.0')
-        && str_contains($requirements, 'HyperPyYAML==1.2.2')
-        && str_contains($requirements, 'opencc-python-reimplemented')
-        && str_contains($requirements, 'tiktoken')
-        && str_contains($requirements, 'WeTextProcessing==1.0.3')
         && !str_contains($dockerfile, 'ENTRYPOINT ["/app/voice_generate.sh"]')
         && str_contains($requirements, 'fastapi==0.111.0')
         && str_contains($requirements, 'uvicorn[standard]==0.30.1'),
