@@ -127,7 +127,17 @@ SH
         $commands = file($log, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES) ?: [];
 
         hub_test_assert($result['exit_code'] === 0, 'restart-required service must build its missing local image before recreate');
-        hub_test_assert(count($commands) >= 3 && str_contains($commands[1], ' build ') && str_contains($commands[2], ' up '), 'restart must run build before compose up');
+        $buildIndex = null;
+        $upIndex = null;
+        foreach ($commands as $index => $command) {
+            if ($buildIndex === null && str_contains($command, ' build ')) {
+                $buildIndex = $index;
+            }
+            if ($upIndex === null && str_contains($command, ' up ')) {
+                $upIndex = $index;
+            }
+        }
+        hub_test_assert($buildIndex !== null && $upIndex !== null && $buildIndex < $upIndex, 'restart must run build before compose up');
     } finally {
         putenv($testDockerBin === false ? 'AIHUB_TEST_DOCKER_BIN' : 'AIHUB_TEST_DOCKER_BIN=' . $testDockerBin);
         putenv('MOCK_DOCKER_LOG');
@@ -519,7 +529,8 @@ SH
         if (hub_platform_id() === 'windows') {
             hub_test_assert($commands === [], 'Windows removal of a stopped unsupported service must not invoke Docker');
         } else {
-            hub_test_assert(count($commands) === 1 && str_contains($commands[0], ' down '), 'service removal must run docker compose down');
+            $downCommands = array_values(array_filter($commands, static fn (string $command): bool => str_contains($command, ' down ')));
+            hub_test_assert(count($downCommands) === 1, 'service removal must run docker compose down');
         }
         hub_test_assert(hub_get_service($db, (int)$service['id']) === null, 'removed service must be deleted from registration');
         hub_test_assert(!file_exists($composePath) && !file_exists($envPath), 'generated compose and env files must be deleted');

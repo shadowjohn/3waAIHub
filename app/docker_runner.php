@@ -1549,7 +1549,7 @@ function hub_active_service_compose_project(array $service, ?callable $runner = 
     $containers = $runner([
         'docker',
         'ps',
-        '-q',
+        '-aq',
         '--filter',
         $filter,
     ], 15, hub_docker_command_environment());
@@ -1608,6 +1608,13 @@ function hub_run_service_compose_command(PDO $db, ?array $job, array $service, a
 {
     $service = hub_service_command_contract($db, $service);
     $usesWsl = hub_service_uses_wsl_runtime($service);
+    if (!$usesWsl) {
+        // Pack 升級後仍須接管同一 compose 檔下唯一的舊 project，避免固定 container_name 衝突。
+        $activeProject = hub_active_service_compose_project($service);
+        if ($activeProject !== null) {
+            $service['active_compose_project'] = $activeProject;
+        }
+    }
     $command = $usesWsl ? hub_wsl_service_compose_command($service, $args) : hub_compose_command($service, $args);
     return hub_run_service_command($db, $job, $command, $timeoutSeconds, hub_docker_command_environment(), $stage, $minProgress, $maxProgress, !$usesWsl);
 }

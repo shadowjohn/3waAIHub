@@ -47,7 +47,7 @@ hub_test('Service active compose project detects the single legacy project for t
     $runner = static function (array $command, int $timeoutSeconds, array $env) use (&$commands, $composeFile): array {
         $commands[] = $command;
         $expectedFilter = 'label=com.docker.compose.project.config_files=' . hub_path($composeFile);
-        if ($command === ['docker', 'ps', '-q', '--filter', $expectedFilter]) {
+        if ($command === ['docker', 'ps', '-aq', '--filter', $expectedFilter]) {
             return ['exit_code' => 0, 'stdout' => "container-a\ncontainer-b\n", 'stderr' => '', 'output' => "container-a\ncontainer-b"];
         }
         if ($command === ['docker', 'inspect', '-f', '{{ index .Config.Labels "com.docker.compose.project" }}', 'container-a', 'container-b']) {
@@ -70,7 +70,7 @@ hub_test('Service active compose project does not guess when multiple non-config
     $composeFile = hub_test_service_compose_project_file('data/test_services/shared/docker-compose.generated.yml');
     $runner = static function (array $command, int $timeoutSeconds, array $env) use ($composeFile): array {
         $expectedFilter = 'label=com.docker.compose.project.config_files=' . hub_path($composeFile);
-        if ($command === ['docker', 'ps', '-q', '--filter', $expectedFilter]) {
+        if ($command === ['docker', 'ps', '-aq', '--filter', $expectedFilter]) {
             return ['exit_code' => 0, 'stdout' => "container-a\ncontainer-b\n", 'stderr' => '', 'output' => "container-a\ncontainer-b"];
         }
         if ($command === ['docker', 'inspect', '-f', '{{ index .Config.Labels "com.docker.compose.project" }}', 'container-a', 'container-b']) {
@@ -86,4 +86,53 @@ hub_test('Service active compose project does not guess when multiple non-config
     ], $runner);
 
     hub_test_assert($project === null, 'ambiguous active Compose projects must fall back to the configured project');
+});
+
+hub_test('Service start adopts a legacy Compose project before creating a managed container', function (): void {
+    $db = hub_test_reset_db();
+    $service = hub_install_pack($db, 'hello', ['idempotent' => true, 'provision_runner' => false])['service'];
+    $root = sys_get_temp_dir() . '/3waaihub_legacy_compose_start_' . bin2hex(random_bytes(8));
+    $docker = $root . '/docker';
+    $log = $root . '/docker.log';
+    $previousDocker = getenv('AIHUB_TEST_DOCKER_BIN');
+    $previousLog = getenv('AIHUB_TEST_DOCKER_LOG');
+
+    try {
+        if (!mkdir($root, 0700, true)) {
+            throw new RuntimeException('Cannot create legacy Compose start fixture.');
+        }
+        file_put_contents($docker, <<<'BASH'
+#!/usr/bin/env bash
+set -eu
+
+case "${1:-}" in
+  ps)
+    printf 'legacy-container\n'
+    ;;
+  inspect)
+    printf 'hello-main\n'
+    ;;
+  compose)
+    printf '%s\n' "$*" >> "$AIHUB_TEST_DOCKER_LOG"
+    ;;
+esac
+BASH
+        );
+        chmod($docker, 0700);
+        putenv('AIHUB_TEST_DOCKER_BIN=' . $docker);
+        putenv('AIHUB_TEST_DOCKER_LOG=' . $log);
+
+        $result = hub_run_service_compose_command($db, null, $service, ['up', '-d'], 10, 'docker_up', 0, 0);
+        $command = (string)file_get_contents($log);
+
+        hub_test_assert((int)$result['exit_code'] === 0, 'legacy Compose start fixture must complete');
+        hub_test_assert(str_contains($command, '-p hello-main '), 'service start must adopt the single legacy Compose project before compose up');
+        hub_test_assert(str_contains($command, ' up -d'), 'service start must run compose up after resolving the legacy project');
+    } finally {
+        putenv($previousDocker === false ? 'AIHUB_TEST_DOCKER_BIN' : 'AIHUB_TEST_DOCKER_BIN=' . $previousDocker);
+        putenv($previousLog === false ? 'AIHUB_TEST_DOCKER_LOG' : 'AIHUB_TEST_DOCKER_LOG=' . $previousLog);
+        @unlink($docker);
+        @unlink($log);
+        @rmdir($root);
+    }
 });
