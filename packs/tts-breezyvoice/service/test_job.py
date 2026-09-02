@@ -34,6 +34,22 @@ def test_requirements_pin_the_breezy_yaml_loader_compatibility_pair() -> None:
     assert "ruamel.yaml==0.18.10" in requirements
 
 
+def test_runtime_includes_breezy_vendor_matcha_dependencies() -> None:
+    requirements = (Path(__file__).parent / "requirements.txt").read_text(encoding="utf-8")
+    dockerfile = (Path(__file__).parent / "Dockerfile").read_text(encoding="utf-8")
+
+    for requirement in (
+        "gdown==5.1.0",
+        "hydra-core==1.3.2",
+        "lightning==2.2.4",
+        "matplotlib==3.7.5",
+        "pyarrow==16.1.0",
+        "wget==3.2",
+    ):
+        assert requirement in requirements
+    assert "PYTHONPATH=/opt/breezyvoice:/opt/breezyvoice/third_party/Matcha-TTS" in dockerfile
+
+
 def sha256_text(value: str) -> str:
     return hashlib.sha256(value.encode("utf-8")).hexdigest()
 

@@ -30,6 +30,8 @@ RUN python3 -m pip install --no-cache-dir --no-build-isolation -r requirements.t
     && python3 -m pip install --no-cache-dir --no-deps --no-build-isolation openai-whisper==20231117 \
     && python3 -c 'import whisper; assert callable(whisper.log_mel_spectrogram)'
 
+ENV PYTHONPATH=/opt/breezyvoice:/opt/breezyvoice/third_party/Matcha-TTS
+
 COPY service/app.py service/job.py service/provision.py ./
 COPY jobs/voice_generate.sh jobs/provision_models.sh ./
 RUN python3 -m py_compile /app/app.py /app/job.py /app/provision.py \
