@@ -281,6 +281,8 @@ def test_validates_mocked_wav_and_writes_best_effort_provenance(tmp_path: Path, 
     expected = [
         job.sys.executable,
         "/opt/breezyvoice/single_inference.py",
+        "--model_path",
+        str(fixture["model_dir"]),
         "--content_to_synthesize",
         "這是要合成的內容。",
         "--speaker_prompt_audio_path",

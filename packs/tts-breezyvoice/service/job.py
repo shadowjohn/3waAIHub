@@ -348,6 +348,8 @@ def run_job(
     command = [
         sys.executable,
         "/opt/breezyvoice/single_inference.py",
+        "--model_path",
+        str(config["model_dir"]),
         "--content_to_synthesize",
         request["text"],
         "--speaker_prompt_audio_path",
