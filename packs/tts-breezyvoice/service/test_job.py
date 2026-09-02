@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import stat
 import subprocess
 import wave
 from pathlib import Path
@@ -192,6 +193,18 @@ def test_provision_uses_injected_downloader_and_writes_canonical_manifest(tmp_pa
         "size_bytes": 15,
     }]
     assert json.loads((model_dir / "model-manifest.json").read_text(encoding="utf-8")) == manifest
+
+
+def test_provision_publishes_a_traversable_model_root(tmp_path: Path) -> None:
+    model_dir = tmp_path / "model"
+
+    def downloader(_model_id: str, _revision: str, destination: Path) -> None:
+        (destination / "weights.bin").write_bytes(b"fixture weights")
+
+    provision.provision_models(model_dir, MODEL_ID, MODEL_REVISION, downloader=downloader)
+
+    # WSL worker 不是 Docker root；必須可 traverse 已發布根目錄才能安全重跑工作。
+    assert stat.S_IMODE(model_dir.stat().st_mode) & 0o055 == 0o055
 
 
 @pytest.mark.parametrize("revision", ["main", "a" * 39, "g" * 40])

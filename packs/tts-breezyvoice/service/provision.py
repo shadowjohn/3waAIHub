@@ -119,6 +119,11 @@ def default_downloader(model_id: str, revision: str, destination: Path) -> None:
 
 def install_stage(stage: Path, destination: Path) -> None:
     """Publish only a complete validated directory; never copy files into live content."""
+    try:
+        # tempfile 建立的 root 是 0700；WSL worker 必須可安全 traverse 已發布快照。
+        os.chmod(stage, 0o755)
+    except OSError as error:
+        raise RuntimeError("model_publish_failed") from error
     backup: Path | None = None
     if destination.exists() or destination.is_symlink():
         if destination.is_symlink() or not destination.is_dir():
