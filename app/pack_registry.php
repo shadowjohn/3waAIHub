@@ -1892,10 +1892,6 @@ function hub_install_pack(PDO $db, string $packId, array|string|null $options = 
     if (!$pack || $pack['status'] !== 'ok') {
         throw new RuntimeException('HubPack is not available or has validation errors.');
     }
-    if (($pack['manifest']['runtime_ready'] ?? null) !== true) {
-        throw new RuntimeException('pack_runtime_not_ready');
-    }
-
     $legacyIdempotent = is_string($options);
     $options = is_string($options) ? ['service_key' => $options, 'idempotent' => true] : ($options ?? []);
     $manifest = $pack['manifest'];
