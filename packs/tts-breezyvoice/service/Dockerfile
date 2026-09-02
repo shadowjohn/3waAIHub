@@ -30,7 +30,19 @@ RUN python3 -m pip install --no-cache-dir --no-build-isolation -r requirements.t
     && python3 -m pip install --no-cache-dir --no-deps --no-build-isolation openai-whisper==20231117 \
     && python3 -c 'import whisper; assert callable(whisper.log_mel_spectrogram)'
 
-ENV PYTHONPATH=/opt/breezyvoice:/opt/breezyvoice/third_party/Matcha-TTS
+ENV PYTHONPATH=/opt/breezyvoice:/opt/breezyvoice/third_party/Matcha-TTS \
+    HF_HOME=/opt/huggingface
+
+RUN python3 - <<'PY'
+from g2pw.api import download_model
+from transformers import BertTokenizer
+
+download_model('/opt/breezyvoice/G2PWModel')
+BertTokenizer.from_pretrained('bert-base-chinese')
+PY
+
+ENV HF_HUB_OFFLINE=1 \
+    TRANSFORMERS_OFFLINE=1
 
 COPY service/app.py service/job.py service/provision.py ./
 COPY jobs/voice_generate.sh jobs/provision_models.sh ./

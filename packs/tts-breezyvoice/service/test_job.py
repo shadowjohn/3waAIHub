@@ -50,6 +50,15 @@ def test_runtime_includes_breezy_vendor_matcha_dependencies() -> None:
     assert "PYTHONPATH=/opt/breezyvoice:/opt/breezyvoice/third_party/Matcha-TTS" in dockerfile
 
 
+def test_runtime_bakes_g2pw_assets_for_offline_inference() -> None:
+    requirements = (Path(__file__).parent / "requirements.txt").read_text(encoding="utf-8")
+    dockerfile = (Path(__file__).parent / "Dockerfile").read_text(encoding="utf-8")
+
+    assert "g2pw==0.1.1" in requirements
+    assert "download_model('/opt/breezyvoice/G2PWModel')" in dockerfile
+    assert "BertTokenizer.from_pretrained('bert-base-chinese')" in dockerfile
+
+
 def sha256_text(value: str) -> str:
     return hashlib.sha256(value.encode("utf-8")).hexdigest()
 

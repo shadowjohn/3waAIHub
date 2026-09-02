@@ -1,6 +1,6 @@
 conformer==0.3.2
 diffusers==0.32.0
-g2pw
+g2pw==0.1.1
 gdown==5.1.0
 transformers==4.46.3
 HyperPyYAML==1.2.3
