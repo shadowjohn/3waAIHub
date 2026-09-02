@@ -53,7 +53,7 @@ function hub_test_gpu_breezy_wav(): string
     $samples = pack('v*', 0, 800, 0xfce0, 0, 400, 0xfe70, 0);
 
     return 'RIFF' . pack('V', 36 + strlen($samples)) . 'WAVEfmt '
-        . pack('VvvVVvv', 16, 1, 1, 24000, 48000, 2, 16)
+        . pack('VvvVVvv', 16, 1, 1, 22050, 44100, 2, 16)
         . 'data' . pack('V', strlen($samples)) . $samples;
 }
 
@@ -166,7 +166,7 @@ function hub_test_gpu_breezy_metadata(array $config, string $audio, bool $mismat
         'device' => $config['device'] ?? 'cuda',
         'final_format' => [
             'mime_type' => 'audio/wav',
-            'sample_rate' => 24000,
+            'sample_rate' => 22050,
             'channels' => 1,
             'sample_format' => 'pcm_s16le',
         ],
@@ -267,7 +267,7 @@ hub_test('BreezyVoice waits on an occupied GPU then plans only its immutable mod
         'worker_id' => 'breezy-plan-worker',
         'gpu_probe' => static fn (): array => ['free_vram_mb' => 8192, 'processes' => []],
         'pid_inspector' => static fn (): array => [],
-        'audio_probe' => static fn (): array => ['duration_seconds' => 0.001, 'sample_rate' => 24000, 'channels' => 1, 'frames' => 7],
+        'audio_probe' => static fn (): array => ['duration_seconds' => 0.001, 'sample_rate' => 22050, 'channels' => 1, 'frames' => 7],
         'executor' => static function (array $context) use (&$plans): array {
             $plans[] = hub_pack_job_default_runner_command($context);
             $audio = hub_test_gpu_breezy_wav();
@@ -295,7 +295,7 @@ hub_test('BreezyVoice waits on an occupied GPU then plans only its immutable mod
         && ($waitingRun['container_id'] ?? null) === null
         && ($outcome['status'] ?? '') === 'success'
         && ($command[0] ?? null) === 'docker'
-        && in_array('3waaihub/tts-breezyvoice:0.1.0-pascal-cu118', $command, true)
+        && in_array('3waaihub/tts-breezyvoice:0.1.1-cu128', $command, true)
         && in_array($modelMount, $command, true)
         && in_array($referenceMount, $command, true)
         && !str_contains($plannedText, 'paligemma'),

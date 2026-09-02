@@ -1,6 +1,6 @@
-FROM nvidia/cuda:11.8.0-cudnn8-runtime-ubuntu22.04
+FROM nvidia/cuda:12.8.1-cudnn-runtime-ubuntu22.04
 
-ARG BREEZYVOICE_UPSTREAM_REVISION
+ARG BREEZYVOICE_UPSTREAM_REVISION=d592c9d3e8927a0f53f68616387060dcd32a05ea
 
 ENV DEBIAN_FRONTEND=noninteractive \
     PYTHONDONTWRITEBYTECODE=1 \
@@ -10,7 +10,7 @@ ENV DEBIAN_FRONTEND=noninteractive \
 WORKDIR /app
 
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends ca-certificates git python3 python3-pip libsndfile1 \
+    && apt-get install -y --no-install-recommends ca-certificates git python3 python3-pip libsndfile1 ffmpeg \
     && python3 -c 'import sys; assert sys.version_info[:2] == (3, 10)' \
     && rm -rf /var/lib/apt/lists/*
 
@@ -21,14 +21,20 @@ RUN set -eu; \
     git -C /opt/breezyvoice checkout --detach "$BREEZYVOICE_UPSTREAM_REVISION"; \
     test "$(git -C /opt/breezyvoice rev-parse HEAD)" = "$BREEZYVOICE_UPSTREAM_REVISION"
 
-COPY service/requirements.txt ./requirements.txt
-RUN python3 -m pip install --no-cache-dir -r requirements.txt \
-    && python3 -m pip check
+RUN python3 -m pip install --no-cache-dir --upgrade pip \
+    && python3 -m pip install --no-cache-dir --index-url https://download.pytorch.org/whl/cu128 torch==2.8.0 torchaudio==2.8.0
 
-COPY service/job.py service/provision.py ./
+COPY service/requirements.txt ./requirements.txt
+RUN python3 -m pip install --no-cache-dir --no-build-isolation -r requirements.txt \
+    && python3 -m pip check \
+    && python3 -m pip install --no-cache-dir --no-deps --no-build-isolation openai-whisper==20231117 \
+    && python3 -c 'import whisper; assert callable(whisper.log_mel_spectrogram)'
+
+COPY service/app.py service/job.py service/provision.py ./
 COPY jobs/voice_generate.sh jobs/provision_models.sh ./
-RUN chmod 0755 /app/job.py /app/provision.py /app/voice_generate.sh /app/provision_models.sh \
+RUN python3 -m py_compile /app/app.py /app/job.py /app/provision.py \
+    && chmod 0755 /app/job.py /app/provision.py /app/voice_generate.sh /app/provision_models.sh \
     && ln -s /app/voice_generate.sh /app/breezyvoice-synthesize \
     && ln -s /app/provision_models.sh /app/breezyvoice-provision-models
 
-ENTRYPOINT ["/app/voice_generate.sh"]
+CMD ["python3", "-m", "uvicorn", "app:app", "--host", "0.0.0.0", "--port", "8000"]

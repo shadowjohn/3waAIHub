@@ -1731,7 +1731,7 @@ function hub_pack_job_breezyvoice_runner_config_valid(array $config): bool
         && $config['prompt_transcript_confirmed'] === true
         && ($config['seed'] === null || (is_int($config['seed']) && $config['seed'] >= 0 && $config['seed'] <= 2147483647))
         && $config['seed_applied'] === false && $config['reproducibility'] === 'best_effort'
-        && $config['device'] === 'cuda' && $config['sample_rate'] === 24000
+        && $config['device'] === 'cuda' && $config['sample_rate'] === 22050
         && $config['channels'] === 1 && $config['sample_format'] === 'pcm_s16le'
         && $config['max_input_chars'] === 2000;
 }

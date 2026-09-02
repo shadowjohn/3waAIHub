@@ -362,9 +362,9 @@ hub_test('Breezy preset engine binding is an owner API operation and never falls
             && ($multiple['status'] ?? null) === 400
             && ($multiplePayload['error'] ?? null) === 'voice_preset_candidate_count_unsupported'
             && ($single['status'] ?? null) === 503
-            && ($singlePayload['error'] ?? null) === 'pack_runtime_not_ready'
+            && ($singlePayload['error'] ?? null) === 'pack_service_disabled'
             && $before === 0 && $after === $before,
-            'Breezy API binding must remain private, reject unsupported batches, and fail closed before it can queue a VoxCPM2 task'
+            'Breezy API binding must remain private, reject unsupported batches, and fail closed while its managed service is disabled'
         );
     } finally {
         $_SERVER = $server;
