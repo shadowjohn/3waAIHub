@@ -631,7 +631,15 @@ function hub_public_api_voice_generate_contract(array $contract, string $mode = 
     if ($mode === 'voice_generate') {
         $contract['managed_voice_presets'] = [
             'discovery_operation' => 'voice_presets',
-            'management_operations' => ['voice_preset_upsert', 'voice_preset_anchor_upsert', 'voice_preset_delete'],
+            'management_operations' => ['voice_preset_upsert', 'voice_preset_anchor_upsert', 'voice_preset_engine_bind', 'voice_preset_delete'],
+            'engine_binding' => [
+                'operation' => 'voice_preset_engine_bind',
+                'request_fields' => ['voice_preset', 'engine'],
+                'supported_engines' => ['breezyvoice'],
+                'owner_only' => true,
+                'response' => ['ok', 'preset'],
+                'boundary' => 'The selected engine is private preset configuration. Synthesis callers use preset_synthesize and cannot select a Pack, model, Profile, path, prompt, control, or source hash.',
+            ],
             'synthesis_operation' => 'preset_synthesize',
             'request' => [
                 'voice_preset' => 'azhe',
@@ -698,8 +706,10 @@ function hub_public_api_voice_generate_contract(array $contract, string $mode = 
             ['code' => 'voice_preset_unavailable', 'http_status' => 410],
             ['code' => 'voice_preset_scene_invalid', 'http_status' => 400],
             ['code' => 'voice_preset_candidate_count_invalid', 'http_status' => 400],
+            ['code' => 'voice_preset_candidate_count_unsupported', 'http_status' => 400],
             ['code' => 'voice_preset_forbidden_input', 'http_status' => 400],
             ['code' => 'voice_preset_invalid', 'http_status' => 400],
+            ['code' => 'voice_preset_engine_incompatible', 'http_status' => 409],
             ['code' => 'generic_voice_invalid', 'http_status' => 400],
             ['code' => 'generic_voice_candidate_count_invalid', 'http_status' => 400],
             ['code' => 'generic_voice_forbidden_input', 'http_status' => 400],

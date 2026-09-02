@@ -27,8 +27,40 @@ voice. Clients never select a model, clone mode, Voice Profile ID, WAV path,
 
 Stable request errors are `voice_preset_required`, `voice_preset_not_found`,
 `voice_preset_unavailable`, `voice_preset_scene_invalid`,
-`voice_preset_candidate_count_invalid`, `voice_preset_forbidden_input`, and
+`voice_preset_candidate_count_invalid`, `voice_preset_candidate_count_unsupported`,
+`voice_preset_forbidden_input`, `voice_preset_engine_incompatible`, and
 `voice_preset_invalid`.
+
+## Private engine bindings
+
+`voice_preset_engine_bind` is owner-only management, not a synthesis input:
+
+```json
+{
+  "operation": "voice_preset_engine_bind",
+  "voice_preset": "mechanic-dad",
+  "engine": "breezyvoice"
+}
+```
+
+The initial supported engine value is `breezyvoice`, which binds the preset to
+the `tts-breezyvoice` Pack after validating that its base Voice Profile is
+private, consented, owned by the caller, transcript-confirmed, unexpired, and
+Taiwan Mandarin compatible. The engine binding, Pack ID, Profile ID, reference
+WAV/hash, transcript, model revision, and runner configuration remain private.
+The response is only the normal public preset shape.
+
+The B1 BreezyVoice contract accepts `candidate_count=1` only. Its saved seed is
+provenance for a best-effort retry (`seed_applied=false`), not a claim of
+deterministic sampling. It serves Taiwan Mandarin (`zh-TW`); Taigi/Hokkien and
+other languages require their own explicit Pack contract.
+
+The Pack must separately be installed, enabled, provisioned from its pinned
+source/model revisions, and have a successful real-inference acceptance before
+it can run. A Windows Hub invokes it through `windows-wsl2-linux-docker`; a
+GTX 1080 uses the Pascal CUDA 11.8 runtime profile. `runtime_ready=false` is a
+hard readiness boundary and returns `pack_runtime_not_ready` without creating a
+task.
 
 For a managed preset, the seed makes a selected candidate reproducible within
 the same preset and engine revision. It does not promise byte-identical output
@@ -72,6 +104,11 @@ from that Router-owned catalog; later `preset_synthesize` requests are pinned
 to that station with no failover. A completed candidate still has the same
 `candidate_id`, `seed`, and `preset_revision`; its `audio_url` is the normal
 authenticated Router artifact URL.
+
+`voice_preset_engine_bind` follows that exact existing affinity. The Router
+will not select or migrate a different station for a bind. It strips child
+engine and reference details before updating its catalog and before returning
+the public response.
 
 Generic exploration has no preset affinity. The Router selects an ordinary
 eligible `voice_generate` station when `generic_synthesize` is submitted; once

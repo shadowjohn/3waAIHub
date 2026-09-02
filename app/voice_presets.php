@@ -504,6 +504,11 @@ function hub_voice_preset_api_synthesize(PDO $db, array $route, array $auth, arr
     if (!is_array($scenes) || !in_array($scene, $scenes, true)) {
         throw new InvalidArgumentException('voice_preset_scene_invalid');
     }
+    $binding = hub_voice_preset_engine_binding_for_preset($db, $preset);
+    if (($binding['pack_id'] ?? null) === HUB_VOICE_PRESET_BREEZY_PACK_ID && $candidateCount !== 1) {
+        throw new InvalidArgumentException('voice_preset_candidate_count_unsupported');
+    }
+    $route = hub_resolve_voice_preset_engine_route($db, (string)$binding['pack_id']);
     $anchor = $db->prepare('SELECT voice_profile_id FROM voice_preset_scene_anchors WHERE voice_preset_id = :voice_preset_id AND scene = :scene LIMIT 1');
     $anchor->execute([':voice_preset_id' => (int)$preset['id'], ':scene' => $scene]);
     $anchorProfileId = (int)$anchor->fetchColumn();
@@ -605,7 +610,7 @@ function hub_voice_generic_api_synthesize(PDO $db, array $route, array $auth, ar
 function hub_voice_preset_api_dispatch(PDO $db, array $route, array $auth, array $payload): ?array
 {
     $operation = $payload['operation'] ?? null;
-    if (!is_string($operation) || !in_array($operation, ['voice_presets', 'voice_preset_upsert', 'voice_preset_anchor_upsert', 'voice_preset_delete', 'preset_synthesize', 'generic_synthesize'], true)) {
+    if (!is_string($operation) || !in_array($operation, ['voice_presets', 'voice_preset_upsert', 'voice_preset_anchor_upsert', 'voice_preset_engine_bind', 'voice_preset_delete', 'preset_synthesize', 'generic_synthesize'], true)) {
         return null;
     }
     $method = strtoupper((string)($_SERVER['REQUEST_METHOD'] ?? 'GET'));
@@ -624,6 +629,7 @@ function hub_voice_preset_api_dispatch(PDO $db, array $route, array $auth, array
         $result = match ($operation) {
             'voice_preset_upsert' => hub_voice_preset_upsert($db, $auth, $payload),
             'voice_preset_anchor_upsert' => hub_voice_preset_anchor_upsert($db, $auth, $payload),
+            'voice_preset_engine_bind' => hub_voice_preset_engine_bind($db, $auth, $payload),
             'voice_preset_delete' => hub_voice_preset_delete($db, $auth, $payload),
             'preset_synthesize' => hub_voice_preset_api_synthesize($db, $route, $auth, $payload),
             'generic_synthesize' => hub_voice_generic_api_synthesize($db, $route, $auth, $payload),
@@ -635,8 +641,10 @@ function hub_voice_preset_api_dispatch(PDO $db, array $route, array $auth, array
             'voice_preset_unavailable',
             'voice_preset_scene_invalid',
             'voice_preset_candidate_count_invalid',
+            'voice_preset_candidate_count_unsupported',
             'voice_preset_forbidden_input',
             'voice_preset_invalid',
+            'voice_preset_engine_incompatible',
             'generic_voice_invalid',
             'generic_voice_candidate_count_invalid',
             'generic_voice_forbidden_input',
@@ -645,10 +653,20 @@ function hub_voice_preset_api_dispatch(PDO $db, array $route, array $auth, array
         $status = match ($code) {
             'voice_preset_not_found' => 404,
             'voice_preset_unavailable' => 410,
+            'voice_preset_engine_incompatible' => 409,
             default => 400,
         };
 
         return hub_gateway_error($status, $code, 'voice preset request is invalid');
+    } catch (RuntimeException $error) {
+        $code = in_array($error->getMessage(), [
+            'pack_not_installed',
+            'pack_runtime_not_ready',
+            'pack_service_disabled',
+            'pack_version_unavailable',
+        ], true) ? $error->getMessage() : 'pack_version_unavailable';
+
+        return hub_gateway_error(503, $code, 'voice generation runtime is not ready');
     }
 
     return hub_gateway_json(200, $result);

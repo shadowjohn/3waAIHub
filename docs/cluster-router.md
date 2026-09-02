@@ -94,6 +94,48 @@ Completed preset tasks return ordered candidates with `candidate_id`,
 automatically uses the preset base voice. Callers do not choose an engine or a
 clone strategy.
 
+### BreezyVoice Taiwan Mandarin binding
+
+`tts-breezyvoice` is an opt-in engine behind the same `voice_generate` managed
+preset boundary. An owner first creates a private, consented, transcript-
+confirmed Voice Profile, creates its managed preset, then sends this owner-only
+operation to the Router or a direct Hub:
+
+```json
+{
+  "operation": "voice_preset_engine_bind",
+  "voice_preset": "mechanic-dad",
+  "engine": "breezyvoice"
+}
+```
+
+The Router requires that `mechanic-dad` already has a station affinity. It
+relays the binding only to that station and does not migrate the character
+voice to another node. The child may keep its own engine, Pack, profile,
+reference-hash, transcript, path, model, and runner details; the Router stores
+and returns only the normal public preset fields (`id`, `label`, `gender`,
+`age_bucket`, `purposes`, `scenes`, `preset_revision`).
+
+After binding, callers still use `preset_synthesize`; they cannot send
+`engine`, Pack/model names, Profile IDs, reference paths, prompts, controls, or
+source hashes. BreezyVoice B1 accepts exactly one candidate. A seed is retained
+for provenance but is **best effort** (`seed_applied=false`): it is not a
+byte-identical sampling guarantee. The first Pack is Taiwan Mandarin (`zh-TW`),
+not a Taiwanese Hokkien/Taigi model.
+
+This Pack is published only when the selected station reports a ready runtime.
+On this Windows GTX 1080 station it uses the separate
+`windows-wsl2-linux-docker` target and Pascal CUDA 11.8 profile; direct
+`linux-docker` remains unavailable on the Windows control plane. Until the
+pinned source, model marker, authorized reference profile, and real inference
+acceptance are verified, `runtime_ready=false` deliberately returns
+`pack_runtime_not_ready` instead of fabricating audio.
+
+Future voice engines reuse the public preset ID and bind privately to their
+own Pack, immutable model revision, provisioner, asset mount marker, and
+artifact contract. They are never selected through a caller-supplied model or
+filesystem value.
+
 The asynchronous flow is submit, poll `cluster_task_status`, read `cluster_task_result`, download each managed artifact, then POST its ID through the returned ACK URL. Status clients may rely on `status`, integer `progress`, and a displayable `message`; a GPU wait can additionally include bounded scheduling diagnostics.
 
 Before creating a child task, the Router prefers a fresh eligible station without an active GPU lease or queued work. Station priority then breaks ties. This is the cross-node fallback boundary: after the child accepts a task, Router keeps it pinned to preserve task ownership, artifacts, ACK, and idempotency. It does not migrate an accepted task or evict a resident service. `retry_after_seconds` describes the next child scheduler check, not a promised completion time.

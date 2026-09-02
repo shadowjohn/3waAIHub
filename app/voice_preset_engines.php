@@ -13,6 +13,39 @@ function hub_voice_preset_engine_pack_id(mixed $engine): ?string
     };
 }
 
+function hub_voice_preset_engine_requested_mode(string $packId): ?string
+{
+    return match ($packId) {
+        HUB_VOICE_PRESET_DEFAULT_PACK_ID => 'voice_generate',
+        HUB_VOICE_PRESET_BREEZY_PACK_ID => 'voice_generate_breezy',
+        default => null,
+    };
+}
+
+function hub_voice_preset_engine_route_definition(string $packId): ?array
+{
+    return match ($packId) {
+        HUB_VOICE_PRESET_DEFAULT_PACK_ID => hub_pack_job_async_routes()['voice_generate'] ?? null,
+        HUB_VOICE_PRESET_BREEZY_PACK_ID => [
+            'pack_id' => HUB_VOICE_PRESET_BREEZY_PACK_ID,
+            'job' => 'synthesize',
+            'accelerator' => 'gpu',
+        ],
+        default => null,
+    };
+}
+
+function hub_resolve_voice_preset_engine_route(PDO $db, string $packId): array
+{
+    $requestedMode = hub_voice_preset_engine_requested_mode($packId);
+    $definition = hub_voice_preset_engine_route_definition($packId);
+    if ($requestedMode === null || $definition === null) {
+        throw new RuntimeException('pack_version_unavailable');
+    }
+
+    return hub_resolve_pack_job_route_from_definition($db, $requestedMode, $definition, hub_get_pack($packId));
+}
+
 function hub_voice_preset_engine_positive_id(mixed $value): ?int
 {
     if (is_int($value)) {

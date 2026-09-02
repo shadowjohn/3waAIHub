@@ -410,14 +410,22 @@ hub_test('Public API publishes installed stopped async Pack routes from canonica
     hub_test_assert(is_array($voice) && ($voice['pack_id'] ?? '') === 'tts-voxcpm2', 'stopped sync TTS row must publish the canonical async voice_generate contract');
     hub_test_assert(
         ($voice['managed_voice_presets']['discovery_operation'] ?? null) === 'voice_presets'
-        && ($voice['managed_voice_presets']['management_operations'] ?? null) === ['voice_preset_upsert', 'voice_preset_anchor_upsert', 'voice_preset_delete']
+        && ($voice['managed_voice_presets']['management_operations'] ?? null) === ['voice_preset_upsert', 'voice_preset_anchor_upsert', 'voice_preset_engine_bind', 'voice_preset_delete']
+        && ($voice['managed_voice_presets']['engine_binding'] ?? null) === [
+            'operation' => 'voice_preset_engine_bind',
+            'request_fields' => ['voice_preset', 'engine'],
+            'supported_engines' => ['breezyvoice'],
+            'owner_only' => true,
+            'response' => ['ok', 'preset'],
+            'boundary' => 'The selected engine is private preset configuration. Synthesis callers use preset_synthesize and cannot select a Pack, model, Profile, path, prompt, control, or source hash.',
+        ]
         && ($voice['managed_voice_presets']['synthesis_operation'] ?? null) === 'preset_synthesize'
         && ($voice['managed_voice_presets']['result_candidates'] ?? null) === ['candidate_id', 'audio_url', 'seed', 'preset_revision']
         && str_contains((string)($voice['managed_voice_presets']['anchor_fallback'] ?? ''), 'automatically uses the preset base voice'),
-        'voice_generate must publish its managed preset contract without engine controls'
+        'voice_generate must publish only the owner-managed engine binding contract and keep synthesis engine-free'
     );
     $voiceErrors = array_column((array)$voice['error_table'], null, 'code');
-    foreach (['voice_preset_required' => 400, 'voice_preset_not_found' => 404, 'voice_preset_unavailable' => 410, 'voice_preset_scene_invalid' => 400, 'voice_preset_candidate_count_invalid' => 400, 'voice_preset_forbidden_input' => 400, 'voice_preset_invalid' => 400] as $code => $status) {
+    foreach (['voice_preset_required' => 400, 'voice_preset_not_found' => 404, 'voice_preset_unavailable' => 410, 'voice_preset_scene_invalid' => 400, 'voice_preset_candidate_count_invalid' => 400, 'voice_preset_candidate_count_unsupported' => 400, 'voice_preset_forbidden_input' => 400, 'voice_preset_invalid' => 400, 'voice_preset_engine_incompatible' => 409] as $code => $status) {
         hub_test_assert(($voiceErrors[$code]['http_status'] ?? null) === $status, 'managed preset error status mismatch: ' . $code);
     }
     hub_test_assert(array_column((array)$voice['operations'], 'operation') === [

@@ -465,7 +465,12 @@ function hub_revalidate_pack_job_async_route(PDO $db, array $snapshot): array
         'upscale_image_cpu' => 'cpu',
         default => null,
     };
-    if ($requestedMode === 'sam3' && (string)($snapshot['pack_id'] ?? '') === 'sam3' && $sam3Operation !== null) {
+    if ($requestedMode === 'voice_generate_breezy'
+        && (string)($snapshot['pack_id'] ?? '') === 'tts-breezyvoice'
+        && (string)($snapshot['job'] ?? '') === 'synthesize') {
+        hub_resolve_stored_pack_job($db, $snapshot);
+        $route = hub_resolve_voice_preset_engine_route($db, 'tts-breezyvoice');
+    } elseif ($requestedMode === 'sam3' && (string)($snapshot['pack_id'] ?? '') === 'sam3' && $sam3Operation !== null) {
         hub_resolve_stored_pack_job($db, $snapshot);
         $route = hub_resolve_sam3_operation_route($db, $sam3Operation);
     } elseif ($requestedMode === 'image-tools' && (string)($snapshot['pack_id'] ?? '') === 'image-tools' && $imageToolsBackend !== null) {

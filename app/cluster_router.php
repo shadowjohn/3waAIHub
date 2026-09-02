@@ -918,8 +918,10 @@ function hub_cluster_voice_generate_relay_errors(): array
         'voice_preset_unavailable' => ['public_code' => 'voice_preset_unavailable', 'http_status' => 410, 'message' => 'voice preset request is invalid'],
         'voice_preset_scene_invalid' => ['public_code' => 'voice_preset_scene_invalid', 'http_status' => 400, 'message' => 'voice preset request is invalid'],
         'voice_preset_candidate_count_invalid' => ['public_code' => 'voice_preset_candidate_count_invalid', 'http_status' => 400, 'message' => 'voice preset request is invalid'],
+        'voice_preset_candidate_count_unsupported' => ['public_code' => 'voice_preset_candidate_count_unsupported', 'http_status' => 400, 'message' => 'voice preset request is invalid'],
         'voice_preset_forbidden_input' => ['public_code' => 'voice_preset_forbidden_input', 'http_status' => 400, 'message' => 'voice preset request is invalid'],
         'voice_preset_invalid' => ['public_code' => 'voice_preset_invalid', 'http_status' => 400, 'message' => 'voice preset request is invalid'],
+        'voice_preset_engine_incompatible' => ['public_code' => 'voice_preset_engine_incompatible', 'http_status' => 409, 'message' => 'voice preset request is invalid'],
         'generic_voice_invalid' => ['public_code' => 'generic_voice_invalid', 'http_status' => 400, 'message' => 'generic voice request is invalid'],
         'generic_voice_candidate_count_invalid' => ['public_code' => 'generic_voice_candidate_count_invalid', 'http_status' => 400, 'message' => 'generic voice request is invalid'],
         'generic_voice_forbidden_input' => ['public_code' => 'generic_voice_forbidden_input', 'http_status' => 400, 'message' => 'generic voice request is invalid'],
@@ -934,6 +936,7 @@ function hub_cluster_voice_preset_operation(?array $payload): ?string
         'voice_presets',
         'voice_preset_upsert',
         'voice_preset_anchor_upsert',
+        'voice_preset_engine_bind',
         'voice_preset_delete',
         'preset_synthesize',
     ], true) ? $operation : null;
@@ -1003,6 +1006,26 @@ function hub_cluster_voice_preset_store(PDO $db, array $auth, int $stationId, mi
     ]);
 
     return $preset;
+}
+
+/**
+ * 子節點可在回應中保留自己的私有執行資訊；Router 只接受並持久化固定的公開 preset 欄位。
+ */
+function hub_cluster_voice_preset_public_child_value(mixed $value): ?array
+{
+    if (!is_array($value)) {
+        return null;
+    }
+    $publicFields = ['id', 'label', 'gender', 'age_bucket', 'purposes', 'scenes', 'preset_revision'];
+    $public = [];
+    foreach ($publicFields as $field) {
+        if (!array_key_exists($field, $value)) {
+            return null;
+        }
+        $public[$field] = $value[$field];
+    }
+
+    return hub_voice_preset_public_value($public);
 }
 
 function hub_cluster_voice_preset_delete(PDO $db, array $auth, string $presetId): void
@@ -1642,7 +1665,7 @@ function hub_cluster_dispatch(PDO $db, string $mode, array $request = [], array 
     $profileSensitive = hub_is_voice_profile_mode($mode)
         && ($profileRoute !== null || $profileOperation === 'profile_prepare');
     $presetRoute = null;
-    if (in_array($presetOperation, ['voice_preset_anchor_upsert', 'voice_preset_delete', 'preset_synthesize'], true)) {
+    if (in_array($presetOperation, ['voice_preset_anchor_upsert', 'voice_preset_engine_bind', 'voice_preset_delete', 'preset_synthesize'], true)) {
         $presetId = hub_voice_preset_slug($profilePayload['voice_preset'] ?? null);
         if ($presetId === null) {
             return $finish(hub_gateway_error(400, 'voice_preset_required', 'voice preset request is invalid'));
@@ -1795,12 +1818,16 @@ function hub_cluster_dispatch(PDO $db, string $mode, array $request = [], array 
                     $payload['image_id'] = (string)$photoAsset['image_id'];
                     $response = hub_cluster_router_with_json_payload($response, $payload, true);
                 }
-            } elseif (in_array($presetOperation, ['voice_preset_upsert', 'voice_preset_anchor_upsert'], true)) {
+            } elseif (in_array($presetOperation, ['voice_preset_upsert', 'voice_preset_anchor_upsert', 'voice_preset_engine_bind'], true)) {
                 try {
                     if (!is_array($payload) || array_keys($payload) !== ['ok', 'preset'] || ($payload['ok'] ?? null) !== true) {
                         throw new UnexpectedValueException('invalid voice preset response');
                     }
-                    $preset = hub_cluster_voice_preset_store($db, (array)$auth['context'], (int)$station['id'], $payload['preset'] ?? null);
+                    $preset = hub_cluster_voice_preset_public_child_value($payload['preset'] ?? null);
+                    if ($preset === null) {
+                        throw new UnexpectedValueException('invalid voice preset response');
+                    }
+                    $preset = hub_cluster_voice_preset_store($db, (array)$auth['context'], (int)$station['id'], $preset);
                     if (!hash_equals((string)($profilePayload['voice_preset'] ?? ''), $preset['id'])) {
                         throw new UnexpectedValueException('voice preset response mismatch');
                     }

@@ -6065,7 +6065,15 @@ hub_test('cluster voice docs expose only opaque profile task workflow fields', f
         $json = json_encode($voice, JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR);
         hub_test_assert(
             ($voice['managed_voice_presets']['discovery_operation'] ?? null) === 'voice_presets'
-            && ($voice['managed_voice_presets']['management_operations'] ?? null) === ['voice_preset_upsert', 'voice_preset_anchor_upsert', 'voice_preset_delete']
+            && ($voice['managed_voice_presets']['management_operations'] ?? null) === ['voice_preset_upsert', 'voice_preset_anchor_upsert', 'voice_preset_engine_bind', 'voice_preset_delete']
+            && ($voice['managed_voice_presets']['engine_binding'] ?? null) === [
+                'operation' => 'voice_preset_engine_bind',
+                'request_fields' => ['voice_preset', 'engine'],
+                'supported_engines' => ['breezyvoice'],
+                'owner_only' => true,
+                'response' => ['ok', 'preset'],
+                'boundary' => 'The selected engine is private preset configuration. Synthesis callers use preset_synthesize and cannot select a Pack, model, Profile, path, prompt, control, or source hash.',
+            ]
             && ($voice['managed_voice_presets']['synthesis_operation'] ?? null) === 'preset_synthesize'
             && ($voice['managed_voice_presets']['result_candidates'] ?? null) === ['candidate_id', 'audio_url', 'seed', 'preset_revision']
             && str_contains((string)($voice['workflow']['preset_affinity'] ?? ''), 'pinned station')

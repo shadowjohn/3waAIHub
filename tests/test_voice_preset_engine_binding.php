@@ -316,3 +316,57 @@ hub_test('Breezy preset binding validates engine payload and owner boundaries', 
         'binding must reject unknown engines and payload keys while preserving owner-scoped not-found behavior'
     );
 });
+
+hub_test('Breezy preset engine binding is an owner API operation and never falls back to VoxCPM2', function (): void {
+    $db = hub_test_reset_db();
+    hub_install_pack($db, 'tts-breezyvoice', ['idempotent' => true]);
+    $member = hub_create_api_member($db, 'Breezy API owner');
+    $profileId = hub_test_breezy_confirmed_profile($db, $member);
+    hub_test_breezy_preset($db, $member, $profileId);
+    $route = ['requested_mode' => 'voice_generate'];
+    $auth = ['member_id' => $member];
+    $server = $_SERVER;
+    $_SERVER['REQUEST_METHOD'] = 'POST';
+    try {
+        $bound = hub_voice_preset_api_dispatch($db, $route, $auth, [
+            'operation' => 'voice_preset_engine_bind',
+            'voice_preset' => 'mechanic-dad',
+            'engine' => 'breezyvoice',
+        ]);
+        $boundPayload = json_decode((string)($bound['body'] ?? ''), true, 32, JSON_THROW_ON_ERROR);
+        $before = (int)$db->query('SELECT COUNT(*) FROM tasks')->fetchColumn();
+        $multiple = hub_voice_preset_api_dispatch($db, $route, $auth, [
+            'operation' => 'preset_synthesize',
+            'voice_preset' => 'mechanic-dad',
+            'purpose' => 'service_reply',
+            'scene' => 'default',
+            'candidate_count' => 2,
+            'text' => '先檢查機油與火星塞。',
+        ]);
+        $multiplePayload = json_decode((string)($multiple['body'] ?? ''), true, 32, JSON_THROW_ON_ERROR);
+        $single = hub_voice_preset_api_dispatch($db, $route, $auth, [
+            'operation' => 'preset_synthesize',
+            'voice_preset' => 'mechanic-dad',
+            'purpose' => 'service_reply',
+            'scene' => 'default',
+            'candidate_count' => 1,
+            'text' => '先檢查機油與火星塞。',
+        ]);
+        $singlePayload = json_decode((string)($single['body'] ?? ''), true, 32, JSON_THROW_ON_ERROR);
+        $after = (int)$db->query('SELECT COUNT(*) FROM tasks')->fetchColumn();
+
+        hub_test_assert(
+            ($bound['status'] ?? null) === 200
+            && ($boundPayload['preset']['id'] ?? null) === 'mechanic-dad'
+            && !array_key_exists('engine', (array)($boundPayload['preset'] ?? []))
+            && ($multiple['status'] ?? null) === 400
+            && ($multiplePayload['error'] ?? null) === 'voice_preset_candidate_count_unsupported'
+            && ($single['status'] ?? null) === 503
+            && ($singlePayload['error'] ?? null) === 'pack_runtime_not_ready'
+            && $before === 0 && $after === $before,
+            'Breezy API binding must remain private, reject unsupported batches, and fail closed before it can queue a VoxCPM2 task'
+        );
+    } finally {
+        $_SERVER = $server;
+    }
+});
