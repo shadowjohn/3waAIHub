@@ -370,3 +370,50 @@ hub_test('Breezy preset engine binding is an owner API operation and never falls
         $_SERVER = $server;
     }
 });
+
+hub_test('Breezy base presets use ultimate clone without scene anchors while VoxCPM2 stays clone', function (): void {
+    $db = hub_test_reset_db();
+    hub_install_pack($db, 'tts-voxcpm2', ['idempotent' => true]);
+    $breezyInstall = hub_install_pack($db, 'tts-breezyvoice', ['idempotent' => true]);
+    hub_set_service_enabled($db, 'voice_generate_breezy', true);
+    hub_update_service_status($db, (int)$breezyInstall['service']['id'], 'running');
+    $member = hub_create_api_member($db, 'Breezy synthesis owner');
+    $profileId = hub_test_breezy_confirmed_profile($db, $member);
+    hub_test_breezy_preset($db, $member, $profileId, 'breezy-base');
+    hub_test_breezy_preset($db, $member, $profileId, 'voxcpm2-base');
+    hub_voice_preset_engine_bind($db, ['member_id' => $member], [
+        'voice_preset' => 'breezy-base',
+        'engine' => 'breezyvoice',
+    ]);
+
+    $request = [
+        'purpose' => 'service_reply',
+        'scene' => 'default',
+        'candidate_count' => 1,
+        'text' => '請確認煞車油與胎壓。',
+    ];
+    $auth = ['member_id' => $member];
+    $voxcpm2 = hub_voice_preset_api_synthesize($db, [], $auth, $request + ['voice_preset' => 'voxcpm2-base']);
+    $voxcpm2Task = hub_get_task($db, (int)($voxcpm2['task_id'] ?? 0));
+    $breezyError = null;
+    try {
+        $breezy = hub_voice_preset_api_synthesize($db, [], $auth, $request + ['voice_preset' => 'breezy-base']);
+    } catch (InvalidArgumentException $error) {
+        $breezyError = $error->getMessage();
+        $breezy = [];
+    }
+    $breezyTask = hub_get_task($db, (int)($breezy['task_id'] ?? 0));
+    $preset = hub_voice_preset_for_owner($db, $member, 'breezy-base') ?? throw new RuntimeException('Missing Breezy synthesis fixture preset.');
+    $anchors = $db->prepare('SELECT COUNT(*) FROM voice_preset_scene_anchors WHERE voice_preset_id = :voice_preset_id');
+    $anchors->execute([':voice_preset_id' => (int)$preset['id']]);
+
+    hub_test_assert(
+        ($voxcpm2Task['input']['mode'] ?? null) === 'clone'
+        && ($voxcpm2Task['input']['voice_context']['mode'] ?? null) === 'clone'
+        && $breezyError === null
+        && ($breezyTask['input']['mode'] ?? null) === 'ultimate_clone'
+        && ($breezyTask['input']['voice_context']['mode'] ?? null) === 'ultimate_clone'
+        && (int)$anchors->fetchColumn() === 0,
+        'Breezy must queue its confirmed base profile as ultimate_clone without an anchor while VoxCPM2 preserves clone'
+    );
+});

@@ -512,7 +512,7 @@ function hub_voice_preset_api_synthesize(PDO $db, array $route, array $auth, arr
     $anchor = $db->prepare('SELECT voice_profile_id FROM voice_preset_scene_anchors WHERE voice_preset_id = :voice_preset_id AND scene = :scene LIMIT 1');
     $anchor->execute([':voice_preset_id' => (int)$preset['id'], ':scene' => $scene]);
     $anchorProfileId = (int)$anchor->fetchColumn();
-    $mode = $anchorProfileId > 0 ? 'ultimate_clone' : 'clone';
+    $mode = ($binding['pack_id'] ?? null) === HUB_VOICE_PRESET_BREEZY_PACK_ID || $anchorProfileId > 0 ? 'ultimate_clone' : 'clone';
     $profileId = $anchorProfileId > 0 ? $anchorProfileId : (int)$preset['base_voice_profile_id'];
     $firstSeedPayload = $payload + ['preset_revision' => (int)$preset['revision']];
     $candidates = [];
