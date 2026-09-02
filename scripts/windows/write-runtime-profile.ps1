@@ -46,7 +46,6 @@ $profile = [ordered]@{
                 'ocr-ppocrv5' = $OcrRuntimeProfile
                 'vlm-paligemma2' = $PaliGemma2RuntimeProfile
                 'vlm-manual-vision' = $ManualVisionRuntimeProfile
-                'vlm-paligemma2' = $PaliGemma2RuntimeProfile
             }
             reason = if ($WslReady) { $null } else { 'WSL Runtime readiness has not passed' }
         }
