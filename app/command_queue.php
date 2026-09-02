@@ -143,7 +143,7 @@ function hub_enqueue_command_job(PDO $db, string $action, ?int $serviceId, array
         if (!$service) {
             throw new InvalidArgumentException('Service not found.');
         }
-        if (hub_command_action_requires_ready_runtime($action)) {
+        if (hub_command_action_requires_ready_runtime($action) && !hub_service_is_internal_task($service)) {
             hub_command_require_ready_runtime_pack(hub_get_pack((string)($service['pack_id'] ?? '')));
         }
         if ($action === 'service_remove') {
