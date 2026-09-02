@@ -417,3 +417,49 @@ hub_test('Breezy base presets use ultimate clone without scene anchors while Vox
         'Breezy must queue its confirmed base profile as ultimate_clone without an anchor while VoxCPM2 preserves clone'
     );
 });
+
+hub_test('Breezy base presets ignore a valid scene anchor', function (): void {
+    $db = hub_test_reset_db();
+    $breezyInstall = hub_install_pack($db, 'tts-breezyvoice', ['idempotent' => true]);
+    hub_set_service_enabled($db, 'voice_generate_breezy', true);
+    hub_update_service_status($db, (int)$breezyInstall['service']['id'], 'running');
+    $member = hub_create_api_member($db, 'Breezy anchored synthesis owner');
+    $baseProfileId = hub_test_breezy_confirmed_profile($db, $member);
+    $anchorProfileId = hub_test_breezy_confirmed_profile($db, $member);
+    hub_test_breezy_preset($db, $member, $baseProfileId, 'breezy-anchored');
+    hub_voice_preset_engine_bind($db, ['member_id' => $member], [
+        'voice_preset' => 'breezy-anchored',
+        'engine' => 'breezyvoice',
+    ]);
+    $preset = hub_voice_preset_for_owner($db, $member, 'breezy-anchored') ?? throw new RuntimeException('Missing Breezy anchored fixture preset.');
+    $now = hub_now();
+    $anchor = $db->prepare(
+        'INSERT INTO voice_preset_scene_anchors (voice_preset_id, scene, voice_profile_id, created_at, updated_at)
+         VALUES (:voice_preset_id, :scene, :voice_profile_id, :created_at, :updated_at)'
+    );
+    $anchor->execute([
+        ':voice_preset_id' => (int)$preset['id'],
+        ':scene' => 'default',
+        ':voice_profile_id' => $anchorProfileId,
+        ':created_at' => $now,
+        ':updated_at' => $now,
+    ]);
+
+    $accepted = hub_voice_preset_api_synthesize($db, [], ['member_id' => $member], [
+        'voice_preset' => 'breezy-anchored',
+        'purpose' => 'service_reply',
+        'scene' => 'default',
+        'candidate_count' => 1,
+        'text' => '請依照保養手冊操作。',
+    ]);
+    $task = hub_get_task($db, (int)($accepted['task_id'] ?? 0));
+
+    hub_test_assert(
+        $baseProfileId !== $anchorProfileId
+        && ($task['input']['mode'] ?? null) === 'ultimate_clone'
+        && ($task['input']['voice_profile_id'] ?? null) === $baseProfileId
+        && ($task['input']['voice_context']['mode'] ?? null) === 'ultimate_clone'
+        && ($task['input']['voice_context']['voice_profile_id'] ?? null) === $baseProfileId,
+        'Breezy must use its confirmed base profile, not a scene anchor'
+    );
+});
