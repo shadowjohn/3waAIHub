@@ -58,6 +58,7 @@ require_once __DIR__ . '/branding.php';
 require_once __DIR__ . '/model_registry.php';
 require_once __DIR__ . '/service_repo.php';
 require_once __DIR__ . '/port_policy.php';
+require_once __DIR__ . '/breezy_pronunciation.php';
 require_once __DIR__ . '/pack_registry.php';
 require_once __DIR__ . '/service_settings.php';
 require_once __DIR__ . '/command_queue.php';

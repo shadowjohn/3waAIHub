@@ -88,8 +88,9 @@ hub_test('BreezyVoice Pascal CUDA 11.8 image can host the managed health API and
     hub_test_assert(
         str_contains($dockerfile, 'ARG BREEZYVOICE_UPSTREAM_REVISION=d592c9d3e8927a0f53f68616387060dcd32a05ea')
         && str_contains($dockerfile, 'libsndfile1 ffmpeg')
-        && str_contains($dockerfile, 'COPY service/app.py service/job.py service/provision.py ./')
-        && str_contains($dockerfile, 'python3 -m py_compile /app/app.py /app/job.py /app/provision.py')
+        && str_contains($dockerfile, 'COPY service/app.py service/job.py service/provision.py service/pronunciation.py service/pronunciation-rules.json ./')
+        && str_contains($dockerfile, 'python3 -m py_compile /app/app.py /app/job.py /app/provision.py /app/pronunciation.py')
+        && str_contains($dockerfile, "from pronunciation import load_global_rules; load_global_rules()")
         && str_contains($dockerfile, 'CMD ["python3", "-m", "uvicorn", "app:app", "--host", "0.0.0.0", "--port", "8000"]')
         && str_contains($dockerfile, 'pip install --no-cache-dir --no-deps --no-build-isolation openai-whisper==20231117')
         && str_contains($dockerfile, 'PYTHONPATH=/opt/breezyvoice:/opt/breezyvoice/third_party/Matcha-TTS')

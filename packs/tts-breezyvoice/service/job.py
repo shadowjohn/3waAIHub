@@ -4,7 +4,9 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
 import hashlib
+import io
 import json
 import os
 import re
@@ -15,6 +17,8 @@ import uuid
 import wave
 from pathlib import Path, PurePosixPath
 from typing import Any, Callable
+
+import pronunciation
 
 
 CONTAINER_REFERENCE = "/data/voice_profiles/reference.wav"
@@ -160,7 +164,7 @@ def validate_runner_config(value: dict[str, Any]) -> dict[str, Any]:
 
 
 def validate_request(value: dict[str, Any], config: dict[str, Any]) -> dict[str, Any]:
-    if set(value) - {"text", "mode", "seed", "seed_policy", "voice_context", "voice_profile_id", "voice_profile_task_id", "prompt_text"}:
+    if set(value) - {"text", "mode", "seed", "seed_policy", "voice_context", "voice_profile_id", "voice_profile_task_id", "prompt_text", "pronunciation"}:
         raise RuntimeError("request_invalid")
     text = value.get("text")
     if not isinstance(text, str) or not text.strip() or "\x00" in text or len(text) > config["max_input_chars"]:
@@ -190,7 +194,13 @@ def validate_request(value: dict[str, Any], config: dict[str, Any]) -> dict[str,
         or sha256_text(prompt_text) != config["transcript_sha256"]
     ):
         raise RuntimeError("voice_context_invalid")
-    return {"text": text, "seed": seed, "transcript": prompt_text}
+    request = {"text": text, "seed": seed, "transcript": prompt_text}
+    if "pronunciation" in value:
+        try:
+            request["pronunciation"] = pronunciation.validate_pronunciation(value["pronunciation"])
+        except pronunciation.PronunciationError as error:
+            raise RuntimeError("invalid_pronunciation_rules") from error
+    return request
 
 
 def collect_regular_files(root: Path, code: str) -> list[Path]:
@@ -307,12 +317,7 @@ def verify_pcm16_wav(path: Path) -> None:
         raise RuntimeError("generated_audio_invalid")
 
 
-def load_resident_model(model_dir: Path) -> dict[str, Any]:
-    config = {
-        "model": os.getenv("BREEZYVOICE_MODEL_ID", "MediaTek-Research/BreezyVoice"),
-        "model_revision": os.getenv("BREEZYVOICE_MODEL_REVISION", ""),
-        "model_dir": resolved_directory(model_dir, "model_assets_unavailable"),
-    }
+def load_runtime_for_pronunciation(config: dict[str, Any]) -> dict[str, Any]:
     validate_model_manifest(config)
     try:
         import torch
@@ -332,6 +337,25 @@ def load_resident_model(model_dir: Path) -> dict[str, Any]:
         }
     except Exception as error:
         raise RuntimeError("model_load_failed") from error
+
+
+def load_resident_model(model_dir: Path) -> dict[str, Any]:
+    return load_runtime_for_pronunciation({
+        "model": os.getenv("BREEZYVOICE_MODEL_ID", "MediaTek-Research/BreezyVoice"),
+        "model_revision": os.getenv("BREEZYVOICE_MODEL_REVISION", ""),
+        "model_dir": resolved_directory(model_dir, "model_assets_unavailable"),
+    })
+
+
+def breezy_text_normalize(text: str) -> str:
+    try:
+        from single_inference import text_normalize_new
+
+        return text_normalize_new(text, split=False)
+    except RuntimeError:
+        raise
+    except Exception as error:
+        raise RuntimeError("pronunciation_compile_failed") from error
 
 
 def run_resident_inference(
@@ -407,7 +431,16 @@ def run_job(
         raise RuntimeError("job_cancelled")
 
     generated_audio = safe_output / "generated_audio.wav"
-    if resident_runtime is not None:
+    pronunciation_metadata = None
+    if "pronunciation" in request:
+        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+            pronunciation_metadata = pronunciation.compile_pronunciation(
+                request["text"], request["pronunciation"], normalizer=breezy_text_normalize,
+            )
+            compiled_request = request | {"text": pronunciation_metadata["model_text"]}
+            runtime = resident_runtime if resident_runtime is not None else load_runtime_for_pronunciation(config)
+            run_resident_inference(runtime, config, compiled_request, reference_path, generated_audio)
+    elif resident_runtime is not None:
         run_resident_inference(resident_runtime, config, request, reference_path, generated_audio)
     else:
         command = [
@@ -455,6 +488,8 @@ def run_job(
             "sample_format": config["sample_format"],
         },
     }
+    if pronunciation_metadata is not None:
+        metadata["pronunciation"] = pronunciation_metadata
     atomic_write_json(safe_output / "synthesis_metadata.json", metadata)
     return metadata
 

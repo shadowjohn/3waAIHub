@@ -34,8 +34,8 @@ hub_test('BreezyVoice Pack is an on-demand Taiwan Mandarin ultimate clone contra
 
     hub_test_assert(
         array_keys($targets) === ['linux-docker', 'windows-wsl2-linux-docker']
-        && ($targets['linux-docker'] ?? null) === true
-        && ($targets['windows-wsl2-linux-docker'] ?? null) === true,
+        && ($targets['linux-docker']['supported'] ?? null) === true
+        && ($targets['windows-wsl2-linux-docker']['supported'] ?? null) === true,
         'BreezyVoice must declare direct Linux and explicit Windows WSL targets'
     );
     hub_test_assert(
@@ -65,7 +65,7 @@ hub_test('BreezyVoice Pack is an on-demand Taiwan Mandarin ultimate clone contra
     );
     hub_test_assert(
         ($manifest['tts_modes'] ?? null) === ['ultimate_clone']
-        && ($job['input_fields'] ?? null) === ['text', 'mode', 'voice_profile_id', 'voice_profile_task_id', 'seed', 'seed_policy']
+        && ($job['input_fields'] ?? null) === ['text', 'mode', 'voice_profile_id', 'voice_profile_task_id', 'seed', 'seed_policy', 'pronunciation']
         && ($job['request_schema']['mode']['enum'] ?? null) === ['ultimate_clone']
         && $context === [
             'mode_input' => 'mode',
@@ -176,6 +176,54 @@ hub_test('BreezyVoice Pack is an on-demand Taiwan Mandarin ultimate clone contra
             . "BREEZYVOICE_MAX_INPUT_CHARS=2000\n"
             . "GPU_VISIBLE_DEVICES=all\n",
         'BreezyVoice example settings must keep the exact runnable revisions'
+    );
+});
+
+hub_test('BreezyVoice accepts only bounded literal pronunciation overrides', function (): void {
+    $pack = hub_get_pack('tts-breezyvoice');
+    $route = hub_pack_async_job_contract((array)($pack['manifest'] ?? []), 'synthesize');
+    $route['pack_id'] = 'tts-breezyvoice';
+    $valid = [
+        'text' => 'AI 協助檢查濾心。',
+        'mode' => 'ultimate_clone',
+        'voice_profile_task_id' => '41',
+        'pronunciation' => [
+            'character_overrides' => [[
+                'id' => 'character:axian:ai',
+                'match' => 'AI',
+                'kind' => 'spoken_form',
+                'value' => '欸哀',
+            ]],
+            'request_overrides' => [[
+                'id' => 'podcast:49:filter',
+                'match' => '濾心',
+                'kind' => 'bopomofo',
+                'readings' => ['ㄌㄩ4', 'ㄒㄧㄣ1'],
+            ]],
+        ],
+    ];
+    $invalid = $valid;
+    $invalid['pronunciation']['request_overrides'][0]['readings'] = ['ㄌㄩ4'];
+    $unsafe = $valid;
+    $unsafe['pronunciation']['character_overrides'][0]['value'] = '[:ㄞ1]';
+    $invalidCode = static function (array $input) use ($route): ?string {
+        try {
+            hub_pack_job_task_input($input, $route);
+        } catch (InvalidArgumentException $error) {
+            return $error->getMessage();
+        }
+
+        return null;
+    };
+    $normalized = hub_pack_job_task_input($valid, $route);
+
+    hub_test_assert(
+        ($route['input_fields'] ?? null) === ['text', 'mode', 'voice_profile_id', 'voice_profile_task_id', 'seed', 'seed_policy', 'pronunciation']
+        && ($route['request_schema']['pronunciation'] ?? null) === ['type' => 'object', 'required' => false, 'max_bytes' => 65536]
+        && ($normalized['pronunciation'] ?? null) === $valid['pronunciation']
+        && $invalidCode($invalid) === 'invalid_pronunciation_rules'
+        && $invalidCode($unsafe) === 'invalid_pronunciation_rules',
+        'BreezyVoice pronunciation overrides must remain bounded literal rules owned by the caller'
     );
 });
 
@@ -452,6 +500,25 @@ hub_test('BreezyVoice profile API accepts a confirmed WAV, queues Ultimate Clone
                 && ($synthesisTask['pack_id'] ?? '') === 'tts-breezyvoice'
                 && ($synthesisTask['input']['mode'] ?? '') === 'ultimate_clone',
                 'BreezyVoice must queue the managed profile as an Ultimate Clone Pack job'
+            );
+            $invalidPronunciation = hub_test_audio_request($db, 'voice_generate_breezy', (string)$token['plain_token'], [
+                'text' => 'AI 協助檢查。',
+                'mode' => 'ultimate_clone',
+                'voice_profile_task_id' => (string)$profileTaskId,
+                'pronunciation' => [
+                    'request_overrides' => [[
+                        'id' => 'invalid:marker',
+                        'match' => 'AI',
+                        'kind' => 'spoken_form',
+                        'value' => '[:ㄞ1]',
+                    ]],
+                ],
+            ]);
+            $invalidPronunciationPayload = hub_test_audio_payload($invalidPronunciation);
+            hub_test_assert(
+                $invalidPronunciation['status'] === 400
+                && ($invalidPronunciationPayload['error'] ?? '') === 'invalid_pronunciation_rules',
+                'BreezyVoice must reject invalid pronunciation input before task submission'
             );
             hub_finish_task_success($db, $synthesisTask ?? [], []);
 

@@ -582,6 +582,14 @@ function hub_public_api_voice_generate_contract(array $contract, string $mode = 
             }
         } elseif (($field['name'] ?? '') === 'control' && $mode === 'voice_generate') {
             $field['description'] = 'Style metadata kept separate from text; currently not passed to VoxCPM2 because no dedicated model parameter exists.';
+        } elseif (($field['name'] ?? '') === 'pronunciation' && $mode === 'voice_generate_breezy') {
+            $field['description'] = 'Optional bounded literal rules. character_overrides and request_overrides contain at most 50 combined spoken_form or Chinese bopomofo rules; callers cannot send Breezy marker syntax.';
+            $field['properties'] = [
+                'character_overrides' => 'caller-owned character rules',
+                'request_overrides' => 'one-request rules',
+                'spoken_form' => '{id, match, kind, value}',
+                'bopomofo' => '{id, match, kind, readings}',
+            ];
         }
     }
     unset($field);
@@ -681,6 +689,9 @@ function hub_public_api_voice_generate_contract(array $contract, string $mode = 
             'profile_delete',
         ],
     ];
+    if ($mode === 'voice_generate_breezy') {
+        $contract['workflow']['pronunciation'] = 'pronunciation is synthesize-only. The Hub applies versioned global rules below caller character_overrides below request_overrides, returns private synthesis_metadata pronunciation metadata, and never changes profile_prepare.prompt_text.';
+    }
     if ($mode === 'voice_generate') {
         $contract['managed_voice_presets'] = [
             'discovery_operation' => 'voice_presets',
@@ -751,6 +762,9 @@ function hub_public_api_voice_generate_contract(array $contract, string $mode = 
     ];
     if ($mode === 'voice_generate_gpt_sovits') {
         $contract['error_table'][] = ['code' => 'voice_profile_reprepare_required', 'http_status' => 409];
+    }
+    if ($mode === 'voice_generate_breezy') {
+        $contract['error_table'][] = ['code' => 'invalid_pronunciation_rules', 'http_status' => 400];
     }
     if ($mode === 'voice_generate') {
         foreach ([

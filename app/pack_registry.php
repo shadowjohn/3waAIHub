@@ -1024,6 +1024,18 @@ function hub_pack_async_job_request_schema_scalar_valid(mixed $value, array $def
         && $value >= ($definition['min'] ?? 0) && $value <= ($definition['max'] ?? 0);
 }
 
+function hub_pack_async_job_request_schema_object_valid(mixed $value, array $definition): bool
+{
+    if (!is_array($value) || array_is_list($value) || ($definition['type'] ?? '') !== 'object') {
+        return false;
+    }
+    try {
+        return strlen(json_encode($value, JSON_THROW_ON_ERROR | JSON_UNESCAPED_UNICODE)) <= ($definition['max_bytes'] ?? 0);
+    } catch (JsonException) {
+        return false;
+    }
+}
+
 function hub_pack_async_job_request_schema(mixed $schema, array $fields): ?array
 {
     if (!is_array($schema) || ($schema !== [] && array_is_list($schema))) {
@@ -1033,12 +1045,12 @@ function hub_pack_async_job_request_schema(mixed $schema, array $fields): ?array
     $normalized = [];
     foreach ($schema as $name => $definition) {
         if (!is_string($name) || !isset($allowed[$name]) || !is_array($definition)
-            || array_diff(array_keys($definition), ['type', 'required', 'enum', 'default', 'example', 'max_length', 'min', 'max', 'requires', 'requires_all', 'gte_field', 'gt_field', 'requires_when']) !== []) {
+            || array_diff(array_keys($definition), ['type', 'required', 'enum', 'default', 'example', 'max_length', 'max_bytes', 'min', 'max', 'requires', 'requires_all', 'gte_field', 'gt_field', 'requires_when']) !== []) {
             return null;
         }
         $type = (string)($definition['type'] ?? 'string');
         $required = $definition['required'] ?? false;
-        if (!in_array($type, ['string', 'boolean', 'integer'], true) || !is_bool($required)) {
+        if (!in_array($type, ['string', 'boolean', 'integer', 'object'], true) || !is_bool($required)) {
             return null;
         }
         $item = ['type' => $type, 'required' => $required];
@@ -1062,7 +1074,16 @@ function hub_pack_async_job_request_schema(mixed $schema, array $fields): ?array
                 $item['enum'] = array_keys($seen);
             }
             $item['max_length'] = $maxLength;
-        } elseif (isset($definition['max_length']) || isset($definition['enum'])) {
+        } elseif ($type === 'object') {
+            if (array_diff(array_keys($definition), ['type', 'required', 'max_bytes']) !== []) {
+                return null;
+            }
+            $maxBytes = $definition['max_bytes'] ?? 16384;
+            if (!is_int($maxBytes) || $maxBytes < 2 || $maxBytes > 65536) {
+                return null;
+            }
+            $item['max_bytes'] = $maxBytes;
+        } elseif (isset($definition['max_length']) || isset($definition['max_bytes']) || isset($definition['enum'])) {
             return null;
         }
         if ($type === 'integer') {
@@ -1129,7 +1150,8 @@ function hub_pack_async_job_request_schema(mixed $schema, array $fields): ?array
             $default = $definition['default'];
             if (($type === 'string' && (!is_string($default) || $default === '' || strlen($default) > ($item['max_length'] ?? 0) || (isset($item['enum']) && !in_array($default, $item['enum'], true))))
                 || ($type === 'boolean' && !is_bool($default))
-                || ($type === 'integer' && (!is_int($default) || $default < $item['min'] || $default > $item['max']))) {
+                || ($type === 'integer' && (!is_int($default) || $default < $item['min'] || $default > $item['max']))
+                || $type === 'object') {
                 return null;
             }
             $item['default'] = $default;
@@ -1338,9 +1360,12 @@ function hub_pack_job_normalize_request_input(array $input, array $contract): ar
     if ($fields === null || $schema === null || $capabilities === null || $requirements === null) {
         throw new InvalidArgumentException('invalid_request');
     }
+    if (($contract['pack_id'] ?? '') === 'tts-breezyvoice' && array_key_exists('pronunciation', $input)) {
+        $input['pronunciation'] = hub_breezy_pronunciation_validate_input($input['pronunciation']);
+    }
     $allowed = array_fill_keys($fields, true);
     foreach ($input as $name => $value) {
-        if (!is_string($name) || !isset($allowed[$name]) || !is_scalar($value)) {
+        if (!is_string($name) || !isset($allowed[$name]) || (!is_scalar($value) && !hub_pack_async_job_request_schema_object_valid($value, $schema[$name] ?? []))) {
             throw new InvalidArgumentException('invalid_request');
         }
     }
@@ -1365,7 +1390,7 @@ function hub_pack_job_normalize_request_input(array $input, array $contract): ar
             if ($valid) {
                 $input[$name] = is_bool($value) ? $value : in_array(strtolower($value), ['1', 'true'], true);
             }
-        } else {
+        } elseif ($definition['type'] === 'integer') {
             $valid = is_int($value) || (is_string($value) && preg_match('/^-?(?:0|[1-9][0-9]*)$/', $value) === 1);
             if ($valid) {
                 $integer = (int)$value;
@@ -1374,6 +1399,8 @@ function hub_pack_job_normalize_request_input(array $input, array $contract): ar
                     $input[$name] = $integer;
                 }
             }
+        } else {
+            $valid = hub_pack_async_job_request_schema_object_valid($value, $definition);
         }
         if (!$valid) {
             hub_pack_job_invalid_field($name, 'is invalid');

@@ -682,6 +682,40 @@ hub_test('GPT-SoVITS public docs require a derived ASR reference', function (): 
     );
 });
 
+hub_test('BreezyVoice public docs describe the safe pronunciation boundary', function (): void {
+    require_once HUB_ROOT . '/app/public_api_docs.php';
+    $pack = hub_get_pack('tts-breezyvoice');
+    $route = hub_pack_async_job_contract((array)($pack['manifest'] ?? []), 'synthesize');
+    $contract = hub_public_api_pack_job_async_contract(($route ?? []) + ['requested_mode' => 'voice_generate_breezy']);
+    $voice = hub_public_api_voice_generate_contract($contract, 'voice_generate_breezy');
+    $fields = array_column((array)($voice['operations'][4]['input_fields'] ?? []), null, 'name');
+    $errors = array_column((array)($voice['error_table'] ?? []), null, 'code');
+
+    hub_test_assert(
+        ($fields['pronunciation']['type'] ?? null) === 'object'
+        && str_contains((string)($fields['pronunciation']['description'] ?? ''), 'literal')
+        && str_contains((string)($voice['workflow']['pronunciation'] ?? ''), 'profile_prepare')
+        && ($errors['invalid_pronunciation_rules']['http_status'] ?? null) === 400,
+        'BreezyVoice public docs must expose only the bounded pronunciation contract'
+    );
+});
+
+hub_test('BreezyVoice Pack and Cluster runbooks retain pronunciation boundaries', function (): void {
+    $pack = (string)file_get_contents(HUB_ROOT . '/packs/tts-breezyvoice/README.md');
+    $cluster = (string)file_get_contents(HUB_ROOT . '/docs/cluster-router.md');
+    $examples = (string)file_get_contents(HUB_ROOT . '/docs/api_examples.md');
+
+    hub_test_assert(
+        str_contains($pack, 'character_overrides')
+        && str_contains($pack, 'request_overrides')
+        && str_contains($pack, 'profile_prepare.prompt_text')
+        && str_contains($cluster, 'invalid_pronunciation_rules')
+        && str_contains($examples, 'voice_generate_breezy')
+        && str_contains($examples, 'synthesis_metadata.json'),
+        'BreezyVoice Pack, Cluster, and API docs must retain the pronunciation contract'
+    );
+});
+
 hub_test('Available async Pack inventory rejects missing disabled stale and runtime-unready Packs', function (): void {
     require_once HUB_ROOT . '/app/public_api_docs.php';
     $published = static function (PDO $db): bool {

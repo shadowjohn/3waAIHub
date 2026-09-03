@@ -207,7 +207,7 @@ function hub_test_artifact_breezy_wav(): string
         . 'data' . pack('V', strlen($samples)) . $samples;
 }
 
-function hub_test_artifact_breezy_fixture(PDO $db): array
+function hub_test_artifact_breezy_fixture(PDO $db, bool $withPronunciation = false): array
 {
     $service = hub_install_pack($db, 'tts-breezyvoice', ['idempotent' => true])['service'];
     hub_update_service_settings($db, (int)$service['id'], ['BREEZYVOICE_EXECUTION_MODE' => 'isolated']);
@@ -259,7 +259,7 @@ function hub_test_artifact_breezy_fixture(PDO $db): array
         'accelerator' => 'gpu',
         'route_resolved_at' => hub_now(),
     ]);
-    $taskId = hub_enqueue_owned_pack_job($db, $route, [
+    $input = [
         'text' => '請產生二十四 kHz 單聲道 PCM16 測試音訊。',
         'mode' => 'ultimate_clone',
         'voice_profile_id' => $profileId,
@@ -273,7 +273,19 @@ function hub_test_artifact_breezy_fixture(PDO $db): array
             'prompt_text_confirmed_at' => $confirmedAt,
             'container_path' => '/data/voice_profiles/reference.wav',
         ],
-    ], $memberId, null, '127.0.0.1');
+    ];
+    if ($withPronunciation) {
+        $input['pronunciation'] = [
+            'character_overrides' => [[
+                'id' => 'character:fixture:ai',
+                'match' => 'AI',
+                'kind' => 'spoken_form',
+                'value' => '欸哀',
+            ]],
+            'request_overrides' => [],
+        ];
+    }
+    $taskId = hub_enqueue_owned_pack_job($db, $route, $input, $memberId, null, '127.0.0.1');
     $task = hub_claim_next_task($db, hub_pack_job_worker_task_types());
     if (!is_array($task) || (int)$task['id'] !== $taskId) {
         throw new RuntimeException('BreezyVoice artifact task was not claimed.');
@@ -306,6 +318,22 @@ function hub_test_artifact_breezy_metadata(array $config, string $audio, bool $m
             'sample_format' => 'pcm_s16le',
             'sample_rate' => 22050,
         ];
+    }
+
+    return $metadata;
+}
+
+function hub_test_artifact_breezy_pronunciation_metadata(array $metadata, bool $valid): array
+{
+    $metadata['pronunciation'] = [
+        'rule_revision' => 1,
+        'spoken_text' => '欸哀 測試。',
+        'model_text' => '欸哀測試。',
+        'applied_rule_ids' => ['character:fixture:ai'],
+        'characters' => ['model' => 5, 'source' => 5, 'spoken' => 5],
+    ];
+    if (!$valid) {
+        $metadata['pronunciation']['model_text'] = ['not a string'];
     }
 
     return $metadata;
@@ -360,6 +388,41 @@ hub_test('BreezyVoice artifact seam accepts reordered format metadata and reject
             && ($task['error_code'] ?? '') === 'artifact_contract_rejected'
             && $artifacts === [],
             'BreezyVoice metadata mismatch must reject the artifact contract without publishing success'
+        );
+    }
+});
+
+hub_test('BreezyVoice pronunciation metadata is required only for opted-in tasks', function (): void {
+    foreach ([true, false] as $valid) {
+        $db = hub_test_reset_db();
+        $fixture = hub_test_artifact_breezy_fixture($db, true);
+        $audio = hub_test_artifact_breezy_wav();
+        $outcome = hub_run_pack_job_task($db, $fixture['task'], [
+            'worker_id' => 'breezy-pronunciation-artifact-worker',
+            'gpu_probe' => static fn (): array => ['free_vram_mb' => 8192, 'processes' => []],
+            'pid_inspector' => static fn (): array => [],
+            'audio_probe' => static fn (): array => ['duration_seconds' => 0.001, 'sample_rate' => 22050, 'channels' => 1, 'frames' => 7],
+            'executor' => static function (array $context) use ($audio, $valid): array {
+                file_put_contents($context['workspace'] . '/output/generated_audio.wav', $audio, LOCK_EX);
+                $metadata = hub_test_artifact_breezy_pronunciation_metadata(
+                    hub_test_artifact_breezy_metadata((array)$context['runner']['config'], $audio, false),
+                    $valid,
+                );
+                file_put_contents(
+                    $context['workspace'] . '/output/synthesis_metadata.json',
+                    json_encode($metadata, JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR) . "\n",
+                    LOCK_EX,
+                );
+
+                return ['exit_code' => 0, 'completed_no_process_evidence' => true, 'cleanup' => hub_pack_job_no_work_cleanup()];
+            },
+        ]);
+        $task = hub_get_task($db, $fixture['task_id']) ?: [];
+        hub_test_assert(
+            $valid
+                ? (($outcome['status'] ?? '') === 'success' && ($task['status'] ?? '') === 'success')
+                : (($outcome['status'] ?? '') === 'failed' && ($task['error_code'] ?? '') === 'artifact_contract_rejected'),
+            'BreezyVoice pronunciation metadata must be private, complete, and tied to an opted-in request'
         );
     }
 });

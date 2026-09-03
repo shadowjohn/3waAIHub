@@ -75,7 +75,7 @@
     {
       "job": "synthesize",
       "input": {
-        "fields": ["text", "mode", "voice_profile_id", "voice_profile_task_id", "seed", "seed_policy"],
+        "fields": ["text", "mode", "voice_profile_id", "voice_profile_task_id", "seed", "seed_policy", "pronunciation"],
         "source_artifact_types": [],
         "source_required": false,
         "request_schema": {
@@ -84,7 +84,8 @@
           "voice_profile_id": {"type": "integer", "required": false, "min": 1, "max": 2147483647},
           "voice_profile_task_id": {"type": "string", "required": false, "max_length": 64},
           "seed": {"type": "integer", "required": false, "min": 0, "max": 2147483647},
-          "seed_policy": {"type": "string", "required": false, "enum": ["best_effort"], "default": "best_effort", "max_length": 32}
+          "seed_policy": {"type": "string", "required": false, "enum": ["best_effort"], "default": "best_effort", "max_length": 32},
+          "pronunciation": {"type": "object", "required": false, "max_bytes": 65536}
         },
         "voice_context": {
           "mode_input": "mode",
