@@ -146,6 +146,7 @@ function hub_service_setting_default(array $service, string $key, array $item): 
         'whisper-asr' => 'WHISPER_INTERNAL_JOB_TOKEN',
         'tts-voxcpm2' => 'VOXCPM2_INTERNAL_JOB_TOKEN',
         'tts-gpt-sovits' => 'GPT_SOVITS_INTERNAL_JOB_TOKEN',
+        'tts-breezyvoice' => 'BREEZYVOICE_INTERNAL_JOB_TOKEN',
     ];
     if (($residentInternalTokens[(string)($service['pack_id'] ?? '')] ?? null) === $key) {
         return bin2hex(random_bytes(32));

@@ -3945,7 +3945,7 @@ hub_test('VoxCPM2 playground manages voice profiles with request-scoped TTS toke
     }
     hub_test_assert(str_contains($source, "require_once __DIR__ . '/_playground_voice_profiles.php';"), 'playground must load the voice-profile helper');
     foreach ([
-        "hub_gateway_authenticate_api_token(\$db, 'tts', hub_get_client_ip(), \$token)",
+        "hub_gateway_authenticate_api_token(\$db, \$mode, hub_get_client_ip(), \$token)",
         'hub_create_uploaded_voice_profile',
         'hub_confirm_voice_profile_prompt',
         'hub_retry_voice_profile_transcription',

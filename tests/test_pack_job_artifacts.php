@@ -209,7 +209,8 @@ function hub_test_artifact_breezy_wav(): string
 
 function hub_test_artifact_breezy_fixture(PDO $db): array
 {
-    hub_install_pack($db, 'tts-breezyvoice', ['idempotent' => true]);
+    $service = hub_install_pack($db, 'tts-breezyvoice', ['idempotent' => true])['service'];
+    hub_update_service_settings($db, (int)$service['id'], ['BREEZYVOICE_EXECUTION_MODE' => 'isolated']);
     $modelDir = hub_test_models_dir() . '/breezyvoice';
     if (!is_dir($modelDir) && !mkdir($modelDir, 0700, true) && !is_dir($modelDir)) {
         throw new RuntimeException('Cannot create BreezyVoice artifact model fixture.');

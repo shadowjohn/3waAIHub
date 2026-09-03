@@ -14,7 +14,7 @@ import tempfile
 import uuid
 import wave
 from pathlib import Path, PurePosixPath
-from typing import Any
+from typing import Any, Callable
 
 
 CONTAINER_REFERENCE = "/data/voice_profiles/reference.wav"
@@ -307,6 +307,63 @@ def verify_pcm16_wav(path: Path) -> None:
         raise RuntimeError("generated_audio_invalid")
 
 
+def load_resident_model(model_dir: Path) -> dict[str, Any]:
+    config = {
+        "model": os.getenv("BREEZYVOICE_MODEL_ID", "MediaTek-Research/BreezyVoice"),
+        "model_revision": os.getenv("BREEZYVOICE_MODEL_REVISION", ""),
+        "model_dir": resolved_directory(model_dir, "model_assets_unavailable"),
+    }
+    validate_model_manifest(config)
+    try:
+        import torch
+        from g2pw import G2PWConverter
+        from single_inference import CustomCosyVoice
+    except ImportError as error:
+        raise RuntimeError("runtime_dependency_missing") from error
+    if not torch.cuda.is_available():
+        raise RuntimeError("gpu_unavailable")
+    try:
+        return {
+            "model": config["model"],
+            "model_revision": config["model_revision"],
+            "model_dir": config["model_dir"],
+            "cosyvoice": CustomCosyVoice(str(config["model_dir"])),
+            "bopomofo_converter": G2PWConverter(),
+        }
+    except Exception as error:
+        raise RuntimeError("model_load_failed") from error
+
+
+def run_resident_inference(
+    runtime: dict[str, Any],
+    config: dict[str, Any],
+    request: dict[str, Any],
+    reference_path: Path,
+    generated_audio: Path,
+) -> None:
+    if (
+        runtime.get("model") != config["model"]
+        or runtime.get("model_revision") != config["model_revision"]
+        or runtime.get("model_dir") != config["model_dir"]
+    ):
+        raise RuntimeError("model_assets_unavailable")
+    try:
+        from single_inference import single_inference
+
+        single_inference(
+            str(reference_path),
+            request["text"],
+            str(generated_audio),
+            runtime["cosyvoice"],
+            runtime["bopomofo_converter"],
+            request["transcript"],
+        )
+    except RuntimeError:
+        raise
+    except Exception as error:
+        raise RuntimeError("inference_failed") from error
+
+
 def atomic_write_json(path: Path, value: dict[str, Any]) -> None:
     temporary = path.parent / f".{path.name}.{uuid.uuid4().hex}.tmp"
     payload = json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":")) + "\n"
@@ -328,6 +385,8 @@ def run_job(
     runner_config: Path,
     *,
     reference_path: Path = Path(CONTAINER_REFERENCE),
+    resident_runtime: dict[str, Any] | None = None,
+    cancelled: Callable[[], bool] | None = None,
 ) -> dict[str, Any]:
     safe_workspace = resolved_directory(workspace, "workspace_path_invalid")
     safe_input = workspace_child(safe_workspace, input_dir, "input")
@@ -342,29 +401,37 @@ def run_job(
     config = validate_runner_config(read_json(safe_config, "runner_config_invalid"))
     request = validate_request(read_json(safe_request, "request_invalid"), config)
     require_reference(reference_path, config["reference_audio_sha256"])
-    validate_model_manifest(config)
+    if resident_runtime is None:
+        validate_model_manifest(config)
+    if cancelled is not None and cancelled():
+        raise RuntimeError("job_cancelled")
 
     generated_audio = safe_output / "generated_audio.wav"
-    command = [
-        sys.executable,
-        "/opt/breezyvoice/single_inference.py",
-        "--model_path",
-        str(config["model_dir"]),
-        "--content_to_synthesize",
-        request["text"],
-        "--speaker_prompt_audio_path",
-        "/data/voice_profiles/reference.wav",
-        "--speaker_prompt_text_transcription",
-        request["transcript"],
-        "--output_path",
-        str(generated_audio),
-    ]
-    try:
-        subprocess.run(command, cwd="/opt/breezyvoice", check=True, timeout=config["timeout_seconds"], shell=False)
-    except subprocess.TimeoutExpired as error:
-        raise RuntimeError("inference_timeout") from error
-    except (OSError, subprocess.CalledProcessError) as error:
-        raise RuntimeError("inference_failed") from error
+    if resident_runtime is not None:
+        run_resident_inference(resident_runtime, config, request, reference_path, generated_audio)
+    else:
+        command = [
+            sys.executable,
+            "/opt/breezyvoice/single_inference.py",
+            "--model_path",
+            str(config["model_dir"]),
+            "--content_to_synthesize",
+            request["text"],
+            "--speaker_prompt_audio_path",
+            "/data/voice_profiles/reference.wav",
+            "--speaker_prompt_text_transcription",
+            request["transcript"],
+            "--output_path",
+            str(generated_audio),
+        ]
+        try:
+            subprocess.run(command, cwd="/opt/breezyvoice", check=True, timeout=config["timeout_seconds"], shell=False)
+        except subprocess.TimeoutExpired as error:
+            raise RuntimeError("inference_timeout") from error
+        except (OSError, subprocess.CalledProcessError) as error:
+            raise RuntimeError("inference_failed") from error
+    if cancelled is not None and cancelled():
+        raise RuntimeError("job_cancelled")
     verify_pcm16_wav(generated_audio)
     audio_sha256 = sha256_file(generated_audio)
     audio_size_bytes = generated_audio.stat().st_size

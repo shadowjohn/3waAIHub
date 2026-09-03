@@ -163,7 +163,10 @@ hub_test('BreezyVoice Pack is an on-demand Taiwan Mandarin ultimate clone contra
         'BreezyVoice compose must remain loopback-only on WSL ext4 storage'
     );
     hub_test_assert(
-        $settings === "BREEZYVOICE_MODEL_ID=MediaTek-Research/BreezyVoice\n"
+        $settings === "BREEZYVOICE_EXECUTION_MODE=resident\n"
+            . "BREEZYVOICE_RESIDENT_MIN_FREE_VRAM_MB=1024\n"
+            . "BREEZYVOICE_INTERNAL_JOB_TOKEN=\n"
+            . "BREEZYVOICE_MODEL_ID=MediaTek-Research/BreezyVoice\n"
             . "BREEZYVOICE_MODEL_REVISION=" . HUB_TEST_BREEZY_MODEL_REVISION . "\n"
             . "BREEZYVOICE_UPSTREAM_REPOSITORY=https://github.com/mtkresearch/BreezyVoice.git\n"
             . "BREEZYVOICE_UPSTREAM_REVISION=" . HUB_TEST_BREEZY_UPSTREAM_REVISION . "\n"
@@ -352,6 +355,46 @@ hub_test('BreezyVoice runtime Pack installs a stopped managed service', function
         && is_file(hub_runtime_settings_path($runtimeDir))
         && is_file(hub_path((string)$service['compose_file'])),
         'BreezyVoice runtime Pack must install its stopped managed service without requiring a Docker build in tests'
+    );
+});
+
+hub_test('BreezyVoice defaults to a preloaded resident runtime', function (): void {
+    $pack = hub_get_pack('tts-breezyvoice');
+    $manifest = is_array($pack['manifest'] ?? null) ? $pack['manifest'] : [];
+    $contract = hub_pack_async_job_contract($manifest, 'synthesize');
+    $schema = hub_get_pack_settings_schema('tts-breezyvoice');
+    $db = hub_test_reset_db();
+    $installed = hub_install_pack($db, 'tts-breezyvoice', ['idempotent' => true, 'provision_runner' => false]);
+    $service = $installed['service'];
+    $settings = hub_service_settings_values($db, $service);
+    $db->prepare("UPDATE services SET enabled = 1, runtime_status = 'running' WHERE id = :id")
+        ->execute([':id' => (int)$service['id']]);
+    $residentPlan = hub_pack_job_resident_plan_for_service($db, hub_get_service($db, (int)$service['id']) ?: [], $contract ?? []);
+
+    hub_test_assert(
+        ($contract['resident'] ?? null) === [
+            'protocol' => 'service_data_v1',
+            'mode_setting' => 'BREEZYVOICE_EXECUTION_MODE',
+            'mode_value' => 'resident',
+            'min_free_vram_setting' => 'BREEZYVOICE_RESIDENT_MIN_FREE_VRAM_MB',
+        ]
+        && ($schema['BREEZYVOICE_EXECUTION_MODE'] ?? null) === [
+            'key' => 'BREEZYVOICE_EXECUTION_MODE',
+            'label' => '執行模式',
+            'type' => 'select',
+            'default' => 'resident',
+            'options' => ['resident', 'isolated'],
+            'option_labels' => ['resident' => '常駐模型（啟動時預載）', 'isolated' => '一次性容器'],
+            'required' => true,
+            'restart_required' => true,
+            'install_option' => true,
+            'secret' => false,
+        ]
+        && ($settings['BREEZYVOICE_EXECUTION_MODE'] ?? null) === 'resident'
+        && is_string($settings['BREEZYVOICE_INTERNAL_JOB_TOKEN'] ?? null)
+        && strlen((string)$settings['BREEZYVOICE_INTERNAL_JOB_TOKEN']) === 64
+        && is_array($residentPlan) && !empty($residentPlan['eligible']),
+        'BreezyVoice must default to its authenticated preloaded resident runtime'
     );
 });
 

@@ -424,3 +424,41 @@ def test_validates_mocked_wav_and_writes_best_effort_provenance(tmp_path: Path, 
     assert json.loads((fixture["output_dir"] / "synthesis_metadata.json").read_text(encoding="utf-8")) == metadata
     with wave.open(str(output), "rb") as generated:
         assert (generated.getnchannels(), generated.getframerate(), generated.getsampwidth()) == (1, 22050, 2)
+
+
+def test_resident_mode_preloads_the_breezy_model(monkeypatch: pytest.MonkeyPatch) -> None:
+    import app
+
+    app.reset_resident_state()
+    monkeypatch.setenv("BREEZYVOICE_EXECUTION_MODE", "resident")
+    runtime = object()
+    calls: list[Path] = []
+    monkeypatch.setattr(app.job, "load_resident_model", lambda path: calls.append(path) or runtime, raising=False)
+
+    assert app.preload_resident_model() is runtime
+    assert calls == [Path("/models/breezyvoice")]
+
+
+def test_resident_job_reuses_the_preloaded_model_without_a_subprocess(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    fixture = make_job_fixture(tmp_path)
+    config = json.loads((fixture["config"]).read_text(encoding="utf-8"))
+    runtime = {
+        "model": config["model"],
+        "model_revision": config["model_revision"],
+        "model_dir": fixture["model_dir"],
+        "cosyvoice": object(),
+        "bopomofo_converter": object(),
+    }
+    calls: list[tuple[Path, Path]] = []
+
+    def fake_inference(received_runtime: dict[str, object], _: dict[str, object], __: dict[str, object], reference: Path, output: Path) -> None:
+        assert received_runtime is runtime
+        calls.append((reference, output))
+        write_pcm16_wav(output)
+
+    monkeypatch.setattr(job, "validate_model_manifest", lambda _: (_ for _ in ()).throw(AssertionError("resident model was revalidated")))
+    monkeypatch.setattr(job, "run_resident_inference", fake_inference)
+    metadata = run_fixture(fixture, resident_runtime=runtime)
+
+    assert calls == [(fixture["reference"], fixture["output_dir"] / "generated_audio.wav")]
+    assert metadata["audio_size_bytes"] > 0

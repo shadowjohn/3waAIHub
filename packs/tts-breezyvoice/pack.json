@@ -114,6 +114,12 @@
           }
         ]
       },
+      "resident": {
+        "protocol": "service_data_v1",
+        "mode_setting": "BREEZYVOICE_EXECUTION_MODE",
+        "mode_value": "resident",
+        "min_free_vram_setting": "BREEZYVOICE_RESIDENT_MIN_FREE_VRAM_MB"
+      },
       "runner_config": {
         "alias_input": "seed_policy",
         "model_allowlist": "breezyvoice_seed_policy",
@@ -180,7 +186,121 @@
       {"type": "service_data", "host_subdir": "", "container_path": "/data/service", "read_only": false}
     ]
   },
+  "settings_schema": [
+    {
+      "key": "BREEZYVOICE_EXECUTION_MODE",
+      "label": "執行模式",
+      "type": "select",
+      "default": "resident",
+      "options": ["resident", "isolated"],
+      "option_labels": {
+        "resident": "常駐模型（啟動時預載）",
+        "isolated": "一次性容器"
+      },
+      "required": true,
+      "restart_required": true,
+      "install_option": true
+    },
+    {
+      "key": "BREEZYVOICE_RESIDENT_MIN_FREE_VRAM_MB",
+      "label": "常駐模式最低可用 VRAM (MB)",
+      "type": "integer",
+      "default": "1024",
+      "min": 0,
+      "max": 16384,
+      "required": true,
+      "restart_required": true
+    },
+    {
+      "key": "BREEZYVOICE_INTERNAL_JOB_TOKEN",
+      "label": "內部工作權杖",
+      "type": "secret",
+      "secret": true,
+      "default": "",
+      "required": true,
+      "restart_required": true
+    },
+    {
+      "key": "BREEZYVOICE_MODEL_ID",
+      "label": "BreezyVoice model",
+      "type": "text",
+      "default": "MediaTek-Research/BreezyVoice",
+      "required": true,
+      "restart_required": true
+    },
+    {
+      "key": "BREEZYVOICE_MODEL_REVISION",
+      "label": "BreezyVoice model revision",
+      "type": "text",
+      "default": "e33b502e0ac21c16b0ee0d00df66ac3fa737393d",
+      "required": true,
+      "restart_required": true
+    },
+    {
+      "key": "BREEZYVOICE_UPSTREAM_REPOSITORY",
+      "label": "BreezyVoice upstream repository",
+      "type": "text",
+      "default": "https://github.com/mtkresearch/BreezyVoice.git",
+      "required": true,
+      "restart_required": true
+    },
+    {
+      "key": "BREEZYVOICE_UPSTREAM_REVISION",
+      "label": "BreezyVoice upstream revision",
+      "type": "text",
+      "default": "d592c9d3e8927a0f53f68616387060dcd32a05ea",
+      "required": true,
+      "restart_required": true
+    },
+    {
+      "key": "BREEZYVOICE_REAL_INFERENCE",
+      "label": "Enable real BreezyVoice inference",
+      "type": "boolean",
+      "default": "1",
+      "required": true,
+      "restart_required": true
+    },
+    {
+      "key": "BREEZYVOICE_DEVICE",
+      "label": "BreezyVoice device",
+      "type": "text",
+      "default": "cuda",
+      "required": true,
+      "restart_required": true
+    },
+    {
+      "key": "BREEZYVOICE_SAMPLE_RATE",
+      "label": "Output sample rate",
+      "type": "integer",
+      "default": "22050",
+      "min": 8000,
+      "max": 96000,
+      "required": true,
+      "restart_required": true
+    },
+    {
+      "key": "BREEZYVOICE_MAX_INPUT_CHARS",
+      "label": "Max input chars",
+      "type": "integer",
+      "default": "2000",
+      "min": 1,
+      "max": 2000,
+      "required": true,
+      "restart_required": false
+    },
+    {
+      "key": "GPU_VISIBLE_DEVICES",
+      "label": "GPU visible devices",
+      "type": "text",
+      "default": "all",
+      "required": false,
+      "restart_required": true
+    }
+  ],
   "env": [
+    {"name": "BREEZYVOICE_EXECUTION_MODE", "default": "resident", "required": true},
+    {"name": "BREEZYVOICE_RESIDENT_MIN_FREE_VRAM_MB", "default": "1024", "required": true},
+    {"name": "BREEZYVOICE_INTERNAL_JOB_TOKEN", "default": "", "required": true},
     {"name": "BREEZYVOICE_MODEL_ID", "default": "MediaTek-Research/BreezyVoice", "required": true},
     {"name": "BREEZYVOICE_MODEL_REVISION", "default": "e33b502e0ac21c16b0ee0d00df66ac3fa737393d", "required": true},
     {"name": "BREEZYVOICE_UPSTREAM_REPOSITORY", "default": "https://github.com/mtkresearch/BreezyVoice.git", "required": true},

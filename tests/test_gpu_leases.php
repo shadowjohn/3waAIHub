@@ -88,7 +88,8 @@ function hub_test_gpu_breezy_wsl_runtime_profile(): array
 
 function hub_test_gpu_breezy_task(PDO $db): array
 {
-    hub_install_pack($db, 'tts-breezyvoice', ['idempotent' => true]);
+    $service = hub_install_pack($db, 'tts-breezyvoice', ['idempotent' => true])['service'];
+    hub_update_service_settings($db, (int)$service['id'], ['BREEZYVOICE_EXECUTION_MODE' => 'isolated']);
     $modelDir = hub_test_gpu_breezy_model_fixture();
     $memberId = hub_create_api_member($db, 'Breezy GPU fixture ' . bin2hex(random_bytes(4)));
     $referencePath = hub_voice_profile_storage_dir() . '/gpu-breezy-' . bin2hex(random_bytes(6)) . '.wav';
