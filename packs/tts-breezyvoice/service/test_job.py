@@ -60,6 +60,50 @@ def test_runtime_bakes_g2pw_assets_for_offline_inference() -> None:
     assert "BertTokenizer.from_pretrained('bert-base-chinese')" in dockerfile
 
 
+def test_onnxruntime_gpu_overrides_g2pw_cpu_distribution_on_each_cuda_target() -> None:
+    for requirements_name, dockerfile_name, version in (
+        ("requirements.txt", "Dockerfile", "1.22.0"),
+        ("requirements.pascal-cu118.txt", "Dockerfile.pascal-cu118", "1.16.0"),
+    ):
+        requirements = (Path(__file__).parent / requirements_name).read_text(encoding="utf-8")
+        dockerfile = (Path(__file__).parent / dockerfile_name).read_text(encoding="utf-8")
+
+        assert f"onnxruntime=={version}" in requirements
+        assert f"onnxruntime-gpu=={version}" in requirements
+        assert f"python3 -m pip install --no-cache-dir --force-reinstall --no-deps onnxruntime-gpu=={version}" in dockerfile
+        assert "CUDAExecutionProvider" in dockerfile
+        assert "g2pw ONNX Runtime compatibility patch target is unavailable" in dockerfile
+        assert "providers=['CUDAExecutionProvider', 'CPUExecutionProvider']" in dockerfile
+
+
+def test_cuda_images_supply_nvrtc_for_real_cudnn_inference() -> None:
+    for dockerfile_name, cuda_version in (
+        ("Dockerfile", "12.8.1"),
+        ("Dockerfile.pascal-cu118", "11.8.0"),
+    ):
+        dockerfile = (Path(__file__).parent / dockerfile_name).read_text(encoding="utf-8")
+
+        assert f"FROM nvidia/cuda:{cuda_version}-devel-ubuntu22.04 AS cuda_devel" in dockerfile
+        assert "COPY --from=cuda_devel /usr/local/cuda/lib64/libnvrtc.so* /usr/local/cuda/lib64/" in dockerfile
+        assert "COPY --from=cuda_devel /usr/local/cuda/lib64/libnvrtc-builtins.so* /usr/local/cuda/lib64/" in dockerfile
+        assert "LD_LIBRARY_PATH=/usr/local/cuda/lib64:/usr/local/lib/python3.10/dist-packages/torch/lib" in dockerfile
+
+
+def test_non_root_runner_uses_ephemeral_writable_python_caches() -> None:
+    for dockerfile_name in ("Dockerfile", "Dockerfile.pascal-cu118"):
+        dockerfile = (Path(__file__).parent / dockerfile_name).read_text(encoding="utf-8")
+
+        for setting in (
+            "HOME=/tmp/home",
+            "XDG_CACHE_HOME=/tmp/xdg",
+            "NUMBA_CACHE_DIR=/tmp/numba",
+            "MPLCONFIGDIR=/tmp/matplotlib",
+        ):
+            assert setting in dockerfile
+        assert "chmod 1777 /tmp/home /tmp/xdg /tmp/numba /tmp/matplotlib" in dockerfile
+        assert "chmod -R a+rwX /opt/huggingface" in dockerfile
+
+
 def test_pascal_image_installs_the_pinned_breezy_runtime_without_interactive_stack() -> None:
     requirements = (Path(__file__).parent / "requirements.pascal-cu118.txt").read_text(encoding="utf-8")
     dockerfile = (Path(__file__).parent / "Dockerfile.pascal-cu118").read_text(encoding="utf-8")

@@ -75,6 +75,17 @@ function hub_test_gpu_breezy_model_fixture(): string
     return realpath($dir) ?: throw new RuntimeException('Cannot resolve BreezyVoice model fixture.');
 }
 
+function hub_test_gpu_breezy_wsl_runtime_profile(): array
+{
+    return ['runtime_targets' => ['windows-wsl2-linux-docker' => [
+        'supported' => true,
+        'distro' => 'Ubuntu-24.04',
+        'runtime_root' => '/DATA/3waAIHub-runtime',
+        'models_root' => '/DATA/models',
+        'pack_profiles' => ['tts-breezyvoice' => 'pascal-cu118'],
+    ]]];
+}
+
 function hub_test_gpu_breezy_task(PDO $db): array
 {
     hub_install_pack($db, 'tts-breezyvoice', ['idempotent' => true]);
@@ -163,6 +174,7 @@ hub_test('BreezyVoice failed runners retain redacted diagnostics in the managed 
             'stdout' => "Breezy started: {$text}",
             'stderr' => "Traceback from Breezy\nAttributeError: 'Loader' object has no attribute 'max_depth'\n{$transcript}\n{$text}\nAIHUB_ERROR_CODE=inference_failed",
         ],
+        'runtime_profile' => hub_test_gpu_breezy_wsl_runtime_profile(),
     ]);
     $task = hub_get_task($db, $fixture['task_id']) ?: [];
     $run = $db->query('SELECT * FROM runtime_runs WHERE task_id = ' . (int)$fixture['task_id'])->fetch() ?: [];
@@ -181,7 +193,6 @@ hub_test('BreezyVoice failed runners retain redacted diagnostics in the managed 
         $_GET = $oldGet;
     }
     $statusPayload = json_decode((string)($statusResponse['body'] ?? ''), true, 32, JSON_THROW_ON_ERROR);
-
     hub_test_assert(
         ($outcome['error_code'] ?? '') === 'inference_failed'
         && ($task['status'] ?? '') === 'failed'

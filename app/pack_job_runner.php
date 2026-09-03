@@ -2514,7 +2514,7 @@ function hub_breezyvoice_wsl_execution_plan(array $service, array $context, ?arr
         || (string)($task['job'] ?? '') !== 'synthesize'
         || ($runner['image'] ?? null) !== '3waaihub/tts-breezyvoice:0.1.1-cu128'
         || ($runner['entrypoint'] ?? null) !== ['/app/voice_generate.sh']
-        || ($runner['args'] ?? null) !== ['{workspace}', '{input_dir}', '{output_dir}', '{input_dir}/runner_config.json']
+        || !is_array($runner['args'] ?? null)
         || ($runner['accelerator'] ?? null) !== 'gpu'
         || ($runner['required_vram_mb'] ?? null) !== 4096
         || ($runner['network_profile'] ?? 'isolated') !== 'isolated'
@@ -2533,6 +2533,19 @@ function hub_breezyvoice_wsl_execution_plan(array $service, array $context, ?arr
         || preg_match('/^[a-z0-9][a-z0-9_.-]{0,95}$/', $runId) !== 1) {
         throw new RuntimeException('workspace_unavailable');
     }
+    // 正式 worker 會傳入展開過的 argv；plan unit fixture 則保留 manifest 原文。
+    // 兩種都是固定 contract，實際 Docker argv 永遠在下方重新由 allowlist 組裝。
+    $resolvedRunnerArgs = [
+        $workspace,
+        $workspace . '/input',
+        $workspace . '/output',
+        $workspace . '/input/runner_config.json',
+    ];
+    $manifestRunnerArgs = ['{workspace}', '{input_dir}', '{output_dir}', '{input_dir}/runner_config.json'];
+    if (!in_array($runner['args'] ?? null, [$resolvedRunnerArgs, $manifestRunnerArgs], true)
+        || !in_array($runner['output_dir'] ?? null, [$workspace . '/output', 'output'], true)) {
+        throw new RuntimeException('job_contract_unavailable');
+    }
     $runtimeRoot = rtrim((string)$runtime['runtime_root'], '/');
     $jobRoot = hub_container_path($runtimeRoot . '/jobs/tts-breezyvoice/' . $runId);
     if (!str_starts_with($jobRoot, $runtimeRoot . '/jobs/tts-breezyvoice/')) {
@@ -2541,6 +2554,8 @@ function hub_breezyvoice_wsl_execution_plan(array $service, array $context, ?arr
     $name = 'aihub-pack-' . substr(preg_replace('/[^a-z0-9_.-]/', '-', strtolower($runId)) ?: 'run', 0, 48);
     $docker = [
         'docker', 'run', '--pull=never', '--network', 'none', '--gpus', 'all',
+        // Windows workspace 沒有可靠的 POSIX uid/gid；在 WSL ext4 端取目前 worker 身分。
+        '--user', '__AIHUB_WSL_WORKSPACE_OWNER__',
         '--mount', 'type=bind,src=' . $jobRoot . '/output,dst=/workspace/output',
         '--mount', 'type=bind,src=' . $jobRoot . '/checkpoints,dst=/workspace/checkpoints',
         '--mount', 'type=bind,src=' . $jobRoot . '/input/request.json,dst=/workspace/input/request.json,readonly',
@@ -2550,12 +2565,21 @@ function hub_breezyvoice_wsl_execution_plan(array $service, array $context, ?arr
         '--name', $name, '--entrypoint', '/app/voice_generate.sh', (string)$runtime['image'],
         '/workspace', '/workspace/input', '/workspace/output', '/workspace/input/runner_config.json',
     ];
+    $dockerCommand = implode(' ', array_map(
+        static fn (string $argument): string => $argument === '__AIHUB_WSL_WORKSPACE_OWNER__'
+            ? '"$runtime_uid:$runtime_gid"'
+            : hub_wsl_shell_literal($argument),
+        $docker,
+    ));
     $script = "set -eu\n"
         . 'windows_workspace=' . hub_wsl_shell_literal($workspace) . "\n"
         . 'windows_reference=' . hub_wsl_shell_literal($reference) . "\n"
         . 'runtime_root=' . hub_wsl_shell_literal($runtimeRoot) . "\n"
         . 'job_root=' . hub_wsl_shell_literal($jobRoot) . "\n"
         . 'container_name=' . hub_wsl_shell_literal($name) . "\n"
+        . 'runtime_uid="$(id -u)"' . "\n"
+        . 'runtime_gid="$(id -g)"' . "\n"
+        . 'case "$runtime_uid:$runtime_gid" in *[!0-9:]*|:*|*:) echo "Invalid WSL runtime identity." >&2; exit 2;; esac' . "\n"
         . 'case "$job_root" in "$runtime_root"/jobs/tts-breezyvoice/*) ;; *) echo "Invalid WSL job root." >&2; exit 2;; esac' . "\n"
         . 'host_workspace="$(wslpath -a "$windows_workspace")"' . "\n"
         . 'host_reference="$(wslpath -a "$windows_reference")"' . "\n"
@@ -2568,14 +2592,20 @@ function hub_breezyvoice_wsl_execution_plan(array $service, array $context, ?arr
         . 'cleanup() { docker container rm -f "$container_name" >/dev/null 2>&1 || true; rm -rf -- "$job_root"; }' . "\n"
         . 'trap cleanup EXIT HUP INT TERM' . "\n"
         . 'copy_required() { source=$1; destination=$2; if [ ! -f "$source" ] || [ -L "$source" ]; then echo "BreezyVoice artifact is unavailable: $source" >&2; exit 2; fi; cp -- "$source" "$destination"; }' . "\n"
-        . implode(' ', array_map('hub_wsl_shell_literal', $docker)) . "\n"
+        . $dockerCommand . "\n"
         . 'copy_required "$job_root/output/generated_audio.wav" "$host_workspace/output/generated_audio.wav"' . "\n"
         . 'copy_required "$job_root/output/synthesis_metadata.json" "$host_workspace/output/synthesis_metadata.json"' . "\n";
 
     return ['command' => hub_wsl_script_command($runtime, $script), 'container_id' => $name, 'runtime' => $runtime, 'job_root' => $jobRoot];
 }
 
-function hub_breezyvoice_wsl_executor(array $service, array $context, ?callable $processRunner = null, ?array $profile = null): array
+function hub_breezyvoice_wsl_executor(
+    array $service,
+    array $context,
+    ?callable $processRunner = null,
+    ?array $profile = null,
+    ?callable $cleanupRunner = null
+): array
 {
     $unsupported = hub_service_runtime_unsupported_result($service, 'windows', $profile);
     if ($unsupported !== null) {
@@ -2583,8 +2613,18 @@ function hub_breezyvoice_wsl_executor(array $service, array $context, ?callable 
     }
     try {
         $plan = hub_breezyvoice_wsl_execution_plan($service, $context, $profile);
-    } catch (Throwable) {
-        return ['exit_code' => 1, 'cleanup' => hub_pack_job_no_work_cleanup(), 'completed_no_process_evidence' => true];
+    } catch (Throwable $e) {
+        // 規劃階段只有兩個已定義的可公開機器碼；不把例外內容帶入 task/API。
+        $errorCode = in_array($e->getMessage(), ['job_contract_unavailable', 'workspace_unavailable'], true)
+            ? $e->getMessage()
+            : 'wsl_execution_plan_unavailable';
+
+        return [
+            'exit_code' => 1,
+            'error_code' => $errorCode,
+            'cleanup' => hub_pack_job_no_work_cleanup(),
+            'completed_no_process_evidence' => true,
+        ];
     }
     $context['started'](['container_id' => $plan['container_id']]);
     try {
@@ -2594,12 +2634,23 @@ function hub_breezyvoice_wsl_executor(array $service, array $context, ?callable 
         $result = ['exit_code' => 1];
     }
     $exitCode = is_array($result) ? (int)($result['exit_code'] ?? 1) : 1;
-    $cleanup = hub_pack_job_default_container_cleanup(static function (array $docker, int $timeoutSeconds) use ($plan): array {
+    $cleanupRunner ??= static function (array $docker, int $timeoutSeconds) use ($plan): array {
         return hub_run_command(hub_wsl_script_command($plan['runtime'], 'exec ' . implode(' ', array_map('hub_wsl_shell_literal', $docker))), $timeoutSeconds);
-    }, (string)$plan['container_id'], (int)$context['runner']['timeout_seconds']);
+    };
+    $cleanup = hub_pack_job_default_container_cleanup($cleanupRunner, (string)$plan['container_id'], (int)$context['runner']['timeout_seconds']);
+    $diagnostics = [];
+    if ($exitCode !== 0 && is_array($result)) {
+        // 僅交給 Breezy 私有診斷層做遮蔽、限長與檔案 ACL；不得回傳到 task/API payload。
+        foreach (['stdout' => 'runner_stdout', 'stderr' => 'runner_stderr'] as $source => $field) {
+            if (is_string($result[$source] ?? null) && $result[$source] !== '') {
+                $diagnostics[$field] = $result[$source];
+            }
+        }
+    }
 
     return ['exit_code' => $exitCode, 'container_id' => (string)$plan['container_id'], 'owned_pids' => $cleanup['owned_pids'], 'cleanup' => $cleanup['cleanup']]
-        + ($exitCode === 0 ? [] : ['error_code' => is_array($result) ? ((string)($result['error_code'] ?? '') ?: hub_pack_job_runner_error_code($result)) : 'runner_failed']);
+        + ($exitCode === 0 ? [] : ['error_code' => is_array($result) ? ((string)($result['error_code'] ?? '') ?: hub_pack_job_runner_error_code($result)) : 'runner_failed'])
+        + $diagnostics;
 }
 
 function hub_web_screenshot_wsl_service_for_task(PDO $db, array $task): ?array
@@ -3757,6 +3808,8 @@ function hub_run_pack_job_task(PDO $db, array $task, array $options = []): array
         $edgeTtsService = null;
         $facebookCrawlerService = null;
         $breezyVoiceService = null;
+        // 僅供受控 worker 測試注入 host-local readiness；request payload 永不參與 runtime profile。
+        $runtimeProfile = is_array($options['runtime_profile'] ?? null) ? $options['runtime_profile'] : null;
         if (hub_platform_id() === 'windows' && (string)($task['pack_id'] ?? '') === 'tts-breezyvoice' && (string)($task['job'] ?? '') === 'synthesize') {
             $breezyVoiceService = hub_breezyvoice_wsl_service_for_task($db, $task);
             if ($breezyVoiceService === null) {
@@ -3789,7 +3842,9 @@ function hub_run_pack_job_task(PDO $db, array $task, array $options = []): array
             $executor = static fn (array $context): array => hub_breezyvoice_wsl_executor(
                 $breezyVoiceService,
                 $context,
-                isset($options['process_runner']) && is_callable($options['process_runner']) ? $options['process_runner'] : null
+                isset($options['process_runner']) && is_callable($options['process_runner']) ? $options['process_runner'] : null,
+                $runtimeProfile,
+                isset($options['command_runner']) && is_callable($options['command_runner']) ? $options['command_runner'] : null,
             );
         } elseif ($webScreenshotService !== null) {
             $executor = static fn (array $context): array => hub_web_screenshot_wsl_executor(

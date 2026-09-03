@@ -223,7 +223,7 @@ hub_test('hello gateway and unknown mode keep expected contract', function (): v
     hub_test_assert($unknown['status'] === 404, 'unknown mode did not return 404');
 });
 
-hub_test('authorized bearer tokens cannot invoke the BreezyVoice direct mode', function (): void {
+hub_test('authorized bearer tokens cannot bypass a disabled BreezyVoice service', function (): void {
     $db = hub_test_reset_db();
     $service = hub_install_pack($db, 'tts-breezyvoice', ['idempotent' => true])['service'];
     $memberId = hub_create_api_member($db, 'BreezyVoice direct-mode client');
@@ -241,8 +241,8 @@ hub_test('authorized bearer tokens cannot invoke the BreezyVoice direct mode', f
     $payload = json_decode((string)$response['body'], true);
 
     hub_test_assert(
-        $response['status'] === 404 && ($payload['error'] ?? null) === 'unknown_mode',
-        'BreezyVoice direct mode must remain indistinguishable from an unregistered mode'
+        $response['status'] === 503 && ($payload['error'] ?? null) === 'pack_service_disabled',
+        'BreezyVoice direct mode must not bypass the service-enabled admission gate'
     );
 });
 

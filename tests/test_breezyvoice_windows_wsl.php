@@ -226,6 +226,8 @@ hub_test('BreezyVoice WSL one-shot stages only declared files and returns declar
             ($plan['container_id'] ?? '') === 'aihub-pack-packjob-73-breezyfixture'
             && str_contains($payload, '/DATA/3waAIHub-runtime/jobs/tts-breezyvoice/packjob-73-breezyfixture')
             && str_contains($payload, "'--network' 'none' '--gpus' 'all'")
+            && str_contains($payload, 'runtime_uid="$(id -u)"')
+            && str_contains($payload, "'--user' \"\$runtime_uid:\$runtime_gid\"")
             && str_contains($payload, HUB_TEST_BREEZY_PASCAL_IMAGE)
             && str_contains($payload, '/DATA/models/breezyvoice')
             && str_contains($payload, 'generated_audio.wav')

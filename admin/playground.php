@@ -18,6 +18,7 @@ function hub_playground_profiles(): array
         'bioclip' => ['label' => 'BioCLIP', 'method' => 'POST', 'kind' => 'bioclip'],
         'paligemma2' => ['label' => 'PaliGemma 2', 'method' => 'POST', 'kind' => 'image'],
         'tts' => ['label' => 'TTS', 'method' => 'POST', 'kind' => 'json'],
+        'voice_generate_breezy' => ['label' => 'BreezyVoice Taiwan Mandarin Clone', 'method' => 'POST', 'kind' => 'json'],
         'edge_tts' => ['label' => 'Edge TTS', 'method' => 'POST', 'kind' => 'form'],
         'structure' => ['label' => 'Structure', 'method' => 'POST', 'kind' => 'document'],
         'chat' => ['label' => 'Chat', 'method' => 'POST', 'kind' => 'json'],
@@ -132,6 +133,20 @@ function hub_playground_request_payload(string $mode): array
         $javascript = trim((string)($_POST['javascript'] ?? ''));
         if ($javascript !== '') {
             $payload['javascript'] = $javascript;
+        }
+
+        return $payload;
+    }
+    if ($mode === 'voice_generate_breezy') {
+        $payload = [
+            'mode' => 'ultimate_clone',
+            'text' => trim((string)($_POST['text'] ?? '這是以已確認的台灣國語 Voice Profile 產生的 BreezyVoice 測試語音。')),
+            'seed' => max(0, (int)($_POST['seed'] ?? 4242)),
+            'seed_policy' => 'best_effort',
+        ];
+        $voiceProfileId = max(0, (int)($_POST['voice_profile_id'] ?? 0));
+        if ($voiceProfileId > 0) {
+            $payload['voice_profile_id'] = $voiceProfileId;
         }
 
         return $payload;
@@ -791,6 +806,48 @@ console.log(await res.json());
 JS;
         return ['curl' => $curl, 'php' => $php, 'js' => $js];
     }
+    if ($mode === 'voice_generate_breezy') {
+        $json = '{"mode":"ultimate_clone","text":"這是以已確認的台灣國語 Voice Profile 產生的 BreezyVoice 測試語音。","voice_profile_task_id":"<VOICE_PROFILE_TASK_ID>","seed":4242,"seed_policy":"best_effort"}';
+        $curl = "$curlExecutable -X POST \"$url\" $curlContinuation\n  -H \"Authorization: Bearer <TOKEN>\" $curlContinuation\n  -H \"Content-Type: application/json\" $curlContinuation\n  -d '$json'";
+        $php = <<<PHP
+\$payload = [
+    'mode' => 'ultimate_clone',
+    'text' => '這是以已確認的台灣國語 Voice Profile 產生的 BreezyVoice 測試語音。',
+    'voice_profile_task_id' => '<VOICE_PROFILE_TASK_ID>',
+    'seed' => 4242,
+    'seed_policy' => 'best_effort',
+];
+\$ch = curl_init($phpUrl);
+curl_setopt_array(\$ch, [
+    CURLOPT_POST => true,
+    CURLOPT_RETURNTRANSFER => true,
+    CURLOPT_HTTPHEADER => [
+        'Authorization: Bearer <TOKEN>',
+        'Content-Type: application/json',
+    ],
+    CURLOPT_POSTFIELDS => json_encode(\$payload, JSON_UNESCAPED_UNICODE),
+]);
+echo curl_exec(\$ch);
+PHP;
+        $js = <<<JS
+const res = await fetch($jsUrl, {
+  method: 'POST',
+  headers: {
+    Authorization: 'Bearer <TOKEN>',
+    'Content-Type': 'application/json'
+  },
+  body: JSON.stringify({
+    mode: 'ultimate_clone',
+    text: '這是以已確認的台灣國語 Voice Profile 產生的 BreezyVoice 測試語音。',
+    voice_profile_task_id: '<VOICE_PROFILE_TASK_ID>',
+    seed: 4242,
+    seed_policy: 'best_effort'
+  })
+});
+console.log(await res.json());
+JS;
+        return ['curl' => $curl, 'php' => $php, 'js' => $js];
+    }
     if ($mode === 'edge_tts') {
         $curl = "$curlExecutable -X POST \"$url\" $curlContinuation\n  -H \"Authorization: Bearer <TOKEN>\" $curlContinuation\n  -H \"Content-Type: application/x-www-form-urlencoded\" $curlContinuation\n  --data-urlencode 'text=RC 閥是用來控制二行程引擎排氣時機的重要機構。' $curlContinuation\n  --data-urlencode 'voice=zh-TW-YunJheNeural' $curlContinuation\n  --data-urlencode 'rate=-25%' $curlContinuation\n  --data-urlencode 'volume=+0%' $curlContinuation\n  --data-urlencode 'pitch=+0Hz' $curlContinuation\n  --data-urlencode 'include_subtitles=true'";
         $php = <<<PHP
@@ -1191,6 +1248,7 @@ $selectedService = hub_playground_selected_service($services, $selectedMode);
 if ($selectedService) {
     $selectedMode = (string)$selectedService['mode'];
 }
+$voiceProfileMode = hub_playground_voice_profile_mode($selectedMode);
 $profiles = hub_playground_profiles();
 $profile = $profiles[$selectedMode] ?? $profiles['hello'];
 $result = null;
@@ -1211,12 +1269,12 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST' && (!empty($_POST['load_voi
         $result = $guard === null ? ($selectedMode === 'tts' ? hub_playground_execute_tts($token) : hub_playground_execute($selectedMode, $token)) : hub_playground_guard_result($guard);
     } elseif ($selectedMode === 'facebook_crawl' && in_array($action, $facebookActions, true)) {
         $result = hub_playground_facebook_action($db, $action, (string)($_POST['bearer_token'] ?? ''), $_POST);
-    } elseif ($action === 'voice_profile_load_draft') {
-        $draft = hub_playground_voice_profile_draft_prefill($db, (string)($_POST['bearer_token'] ?? ''), (int)($_POST['voice_profile_id'] ?? 0));
+    } elseif ($voiceProfileMode && $action === 'voice_profile_load_draft') {
+        $draft = hub_playground_voice_profile_draft_prefill($db, (string)($_POST['bearer_token'] ?? ''), (int)($_POST['voice_profile_id'] ?? 0), $selectedMode);
         $result = $draft === null ? hub_playground_voice_profile_error_result() : hub_playground_voice_profile_draft_result();
         $voiceProfileDraftPrefill = $draft ?? '';
-    } elseif ($action !== 'voice_profile_list') {
-        $result = hub_playground_voice_profile_dispatch($db, $action, (string)($_POST['bearer_token'] ?? ''), $_POST, $_FILES);
+    } elseif ($voiceProfileMode && $action !== 'voice_profile_list') {
+        $result = hub_playground_voice_profile_dispatch($db, $action, (string)($_POST['bearer_token'] ?? ''), $_POST, $_FILES, $selectedMode);
     }
 }
 $examples = hub_playground_examples($selectedMode);
@@ -1230,8 +1288,8 @@ $ttsProfiles = [];
 $ttsManagementProfiles = [];
 $facebookProfiles = [];
 $profileToken = trim((string)($_POST['bearer_token'] ?? ''));
-if ($selectedMode === 'tts' && ($profileToken !== '' || $action === 'voice_profile_list')) {
-    $ttsProfileOptions = hub_playground_tts_profile_options_result($db, $profileToken);
+if ($voiceProfileMode && ($profileToken !== '' || $action === 'voice_profile_list')) {
+    $ttsProfileOptions = hub_playground_tts_profile_options_result($db, $profileToken, $selectedMode);
     if (!empty($ttsProfileOptions['ok'])) {
         $ttsProfiles = $ttsProfileOptions['execution_profiles'];
         $ttsManagementProfiles = $ttsProfileOptions['management_profiles'];
@@ -1251,6 +1309,7 @@ $selectedManagementProfileId = hub_playground_voice_profile_selected_id($_POST);
 $audioUrls = $selectedService && $selectedMode === 'tts' && is_array($result) ? hub_playground_tts_audio_urls($selectedService, $result) : [];
 $audioUrl = $selectedService && $selectedMode === 'tts' && $audioUrls === [] ? hub_playground_tts_audio_url($selectedService, $result) : '';
 $authHeaderExample = 'Authorization: Bearer <TOKEN>';
+$voiceProfileWorkflowLabel = $selectedMode === 'voice_generate_breezy' ? 'BreezyVoice Ultimate Clone' : 'Basic Clone';
 
 hub_admin_header(hub_i18n_text('API 測試場'), $user);
 ?>
@@ -1276,7 +1335,7 @@ hub_admin_header(hub_i18n_text('API 測試場'), $user);
     <h1><?= hub_h(hub_i18n_text('API 測試場')) ?></h1>
     <p class="muted"><?= hub_h(hub_i18n_text('後台 server side 呼叫本機')) ?> <code>api.php</code>。<?= hub_h(hub_i18n_text('Bearer token 只用於本次測試，不保存；範例固定使用')) ?> <code>&lt;TOKEN&gt;</code>。</p>
     <p><strong><?= hub_h(hub_i18n_text('需要 Bearer Token')) ?></strong>。<?= hub_h(hub_i18n_text('還沒有 token 時，請先')) ?> <a href="<?= $isAdminUser ? 'api_members.php' : 'my_tokens.php' ?>"><?= hub_h(hub_i18n_text('前往 API 金鑰建立')) ?></a>。</p>
-    <p class="muted"><?= hub_h(hub_i18n_text('支援範例：')) ?><code>api.php?mode=hello</code>、<code>api.php?mode=translate</code>、<code>api.php?mode=ocr</code>、<code>api.php?mode=yolo</code>、<code>api.php?mode=sam3</code>、<code>api.php?mode=bioclip</code>、<code>api.php?mode=paligemma2</code>、<code>api.php?mode=tts</code>、<code>api.php?mode=structure</code>、<code>api.php?mode=chat</code>、<code>api.php?mode=photo_upload</code>、<code>api.php?mode=photo</code>、<code>api.php?mode=audio</code>、<code>api.php?mode=speech_transcribe</code>、<code>api.php?mode=speech_transcribe_fast_zh</code>、<code>api.php?mode=background_remove</code>、<code>api.php?mode=image-tools</code>、<code>api.php?mode=taiwan_address</code>、<code>api.php?mode=web_capture</code>、<code>api.php?mode=facebook_crawl</code></p>
+    <p class="muted"><?= hub_h(hub_i18n_text('支援範例：')) ?><code>api.php?mode=hello</code>、<code>api.php?mode=translate</code>、<code>api.php?mode=ocr</code>、<code>api.php?mode=yolo</code>、<code>api.php?mode=sam3</code>、<code>api.php?mode=bioclip</code>、<code>api.php?mode=paligemma2</code>、<code>api.php?mode=tts</code>、<code>api.php?mode=voice_generate_breezy</code>、<code>api.php?mode=structure</code>、<code>api.php?mode=chat</code>、<code>api.php?mode=photo_upload</code>、<code>api.php?mode=photo</code>、<code>api.php?mode=audio</code>、<code>api.php?mode=speech_transcribe</code>、<code>api.php?mode=speech_transcribe_fast_zh</code>、<code>api.php?mode=background_remove</code>、<code>api.php?mode=image-tools</code>、<code>api.php?mode=taiwan_address</code>、<code>api.php?mode=web_capture</code>、<code>api.php?mode=facebook_crawl</code></p>
 </section>
 
 <div class="hub-card-grid">
@@ -1451,6 +1510,22 @@ hub_admin_header(hub_i18n_text('API 測試場'), $user);
                 <label>seed</label>
                 <input name="seed" type="number" value="42">
                 <label><input name="real_inference" type="checkbox" value="1" checked> <?= hub_h(hub_i18n_text('真實推論')) ?></label>
+            <?php elseif ($selectedMode === 'voice_generate_breezy'): ?>
+                <label><?= hub_h(hub_i18n_text('文字')) ?></label>
+                <textarea name="text" rows="5" maxlength="2000" required><?= hub_h((string)($_POST['text'] ?? '這是以已確認的台灣國語 Voice Profile 產生的 BreezyVoice 測試語音。')) ?></textarea>
+                <label>Voice Profile</label>
+                <select name="voice_profile_id" required>
+                    <option value=""><?= hub_h(hub_i18n_text('請先載入已確認的 Voice Profile')) ?></option>
+                    <?php foreach ($ttsProfiles as $ttsProfile): ?>
+                        <?php $ttsProfileId = (int)$ttsProfile['id']; ?>
+                        <option value="<?= $ttsProfileId ?>" <?= (int)($_POST['voice_profile_id'] ?? 0) === $ttsProfileId ? 'selected' : '' ?>>
+                            <?= hub_h((string)$ttsProfile['name']) ?> #<?= $ttsProfileId ?> / <?= hub_h((string)$ttsProfile['transcription_status']) ?>
+                        </option>
+                    <?php endforeach; ?>
+                </select>
+                <p class="muted"><?= hub_h(hub_i18n_text('BreezyVoice 固定使用 ultimate_clone；先上傳 WAV、確認 ASR 逐字稿，再載入目前 token 可用的 Profile。')) ?></p>
+                <label>seed</label>
+                <input name="seed" type="number" min="0" max="2147483647" value="<?= hub_h((string)max(0, (int)($_POST['seed'] ?? 4242))) ?>">
             <?php elseif ($selectedMode === 'image-tools'): ?>
                 <?php
                 $imageToolsOperation = in_array((string)($_POST['operation'] ?? ''), ['upscale', 'upscale_task', 'colorize'], true) ? (string)$_POST['operation'] : 'upscale';
@@ -1640,19 +1715,19 @@ hub_admin_header(hub_i18n_text('API 測試場'), $user);
                 <p class="muted">hello <?= hub_h(hub_i18n_text('使用 GET，不需要欄位。')) ?></p>
             <?php endif; ?>
             <div class="hub-actions">
-                <?php if ($selectedMode === 'tts'): ?><button type="submit" name="load_voice_profiles" value="1"><?= hub_h(hub_i18n_text('載入可用 Voice Profile')) ?></button><?php endif; ?>
+                <?php if ($voiceProfileMode): ?><button type="submit" name="load_voice_profiles" value="1"><?= hub_h(hub_i18n_text('載入可用 Voice Profile')) ?></button><?php endif; ?>
                 <?php if ($selectedMode === 'facebook_crawl'): ?><button type="submit" name="load_facebook_profiles" value="1"><?= hub_h(hub_i18n_text('載入 Profile')) ?></button><?php endif; ?>
                 <button class="primary" type="submit"><?= hub_h($selectedMode === 'facebook_crawl' ? hub_i18n_text('開始背景爬取') : hub_i18n_text('執行測試')) ?></button>
             </div>
         </form>
-        <?php if ($selectedMode === 'tts'): ?>
+        <?php if ($voiceProfileMode): ?>
             <hr>
             <h3>Voice Profile</h3>
-            <p class="muted"><?= hub_h(hub_i18n_text('管理 Basic Clone 的參考 WAV；Bearer token 僅用於本次請求。')) ?></p>
+            <p class="muted"><?= hub_h(hub_i18n_text('管理 ' . $voiceProfileWorkflowLabel . ' 的參考 WAV；Bearer token 僅用於本次請求。')) ?></p>
             <form method="post" enctype="multipart/form-data">
                 <input type="hidden" name="csrf_token" value="<?= hub_h(hub_csrf_token()) ?>">
                 <input type="hidden" name="action" value="voice_profile_upload">
-                <input type="hidden" name="mode" value="tts">
+                <input type="hidden" name="mode" value="<?= hub_h($selectedMode) ?>">
                 <label>Bearer Token</label>
                 <input name="bearer_token" type="password" placeholder="<TOKEN>" autocomplete="off" required>
                 <label><?= hub_h(hub_i18n_text('Voice Profile 名稱')) ?></label>
@@ -1670,7 +1745,7 @@ hub_admin_header(hub_i18n_text('API 測試場'), $user);
             <form method="post">
                 <input type="hidden" name="csrf_token" value="<?= hub_h(hub_csrf_token()) ?>">
                 <input type="hidden" name="action" value="voice_profile_confirm">
-                <input type="hidden" name="mode" value="tts">
+                <input type="hidden" name="mode" value="<?= hub_h($selectedMode) ?>">
                 <label>Bearer Token</label>
                 <input name="bearer_token" type="password" placeholder="<TOKEN>" autocomplete="off" required>
                 <label>Voice Profile</label>
@@ -1688,7 +1763,7 @@ hub_admin_header(hub_i18n_text('API 測試場'), $user);
             <form method="post">
                 <input type="hidden" name="csrf_token" value="<?= hub_h(hub_csrf_token()) ?>">
                 <input type="hidden" name="action" value="voice_profile_retry_asr">
-                <input type="hidden" name="mode" value="tts">
+                <input type="hidden" name="mode" value="<?= hub_h($selectedMode) ?>">
                 <label>Bearer Token</label>
                 <input name="bearer_token" type="password" placeholder="<TOKEN>" autocomplete="off" required>
                 <label>Voice Profile</label>

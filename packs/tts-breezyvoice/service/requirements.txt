@@ -14,6 +14,7 @@ matplotlib==3.7.5
 networkx==3.1
 numpy==1.26.4
 omegaconf==2.3.0
+onnxruntime==1.22.0
 onnxruntime-gpu==1.22.0
 opencc-python-reimplemented
 pyarrow==16.1.0

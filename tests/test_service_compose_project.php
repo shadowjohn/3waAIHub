@@ -89,6 +89,9 @@ hub_test('Service active compose project does not guess when multiple non-config
 });
 
 hub_test('Service start adopts a legacy Compose project before creating a managed container', function (): void {
+    if (hub_platform_id() === 'windows') {
+        hub_test_skip('legacy Compose process fixture requires native Linux shell semantics.');
+    }
     $db = hub_test_reset_db();
     $service = hub_install_pack($db, 'hello', ['idempotent' => true, 'provision_runner' => false])['service'];
     $root = sys_get_temp_dir() . '/3waaihub_legacy_compose_start_' . bin2hex(random_bytes(8));
@@ -101,7 +104,7 @@ hub_test('Service start adopts a legacy Compose project before creating a manage
         if (!mkdir($root, 0700, true)) {
             throw new RuntimeException('Cannot create legacy Compose start fixture.');
         }
-        file_put_contents($docker, <<<'BASH'
+        $fixture = <<<'BASH'
 #!/usr/bin/env bash
 set -eu
 
@@ -117,7 +120,8 @@ case "${1:-}" in
     ;;
 esac
 BASH
-        );
+        ;
+        file_put_contents($docker, $fixture);
         chmod($docker, 0700);
         putenv('AIHUB_TEST_DOCKER_BIN=' . $docker);
         putenv('AIHUB_TEST_DOCKER_LOG=' . $log);

@@ -3,9 +3,18 @@ declare(strict_types=1);
 
 require_once __DIR__ . '/_playground_tts_artifacts.php';
 
-function hub_playground_tts_member_id(PDO $db, string $token): int
+function hub_playground_voice_profile_mode(string $mode): bool
 {
-    $auth = hub_gateway_authenticate_api_token($db, 'tts', hub_get_client_ip(), $token);
+    return in_array($mode, ['tts', 'voice_generate_breezy'], true);
+}
+
+function hub_playground_tts_member_id(PDO $db, string $token, string $mode = 'tts'): int
+{
+    if (!hub_playground_voice_profile_mode($mode)) {
+        throw new InvalidArgumentException('voice_profile_mode_invalid');
+    }
+
+    $auth = hub_gateway_authenticate_api_token($db, $mode, hub_get_client_ip(), $token);
     $memberId = (int)($auth['context']['member_id'] ?? 0);
     if (empty($auth['ok']) || $memberId < 1) {
         throw new InvalidArgumentException('voice_profile_token_invalid');
@@ -77,20 +86,20 @@ function hub_playground_tts_profiles_for_member(PDO $db, int $memberId, bool $ow
     return $stmt->fetchAll();
 }
 
-function hub_playground_tts_active_profiles(PDO $db, string $token): array
+function hub_playground_tts_active_profiles(PDO $db, string $token, string $mode = 'tts'): array
 {
-    return hub_playground_tts_profiles_for_member($db, hub_playground_tts_member_id($db, trim($token)), false);
+    return hub_playground_tts_profiles_for_member($db, hub_playground_tts_member_id($db, trim($token), $mode), false);
 }
 
-function hub_playground_tts_owned_profiles(PDO $db, string $token): array
+function hub_playground_tts_owned_profiles(PDO $db, string $token, string $mode = 'tts'): array
 {
-    return hub_playground_tts_profiles_for_member($db, hub_playground_tts_member_id($db, trim($token)), true);
+    return hub_playground_tts_profiles_for_member($db, hub_playground_tts_member_id($db, trim($token), $mode), true);
 }
 
-function hub_playground_tts_profile_options_result(PDO $db, string $token): array
+function hub_playground_tts_profile_options_result(PDO $db, string $token, string $mode = 'tts'): array
 {
     try {
-        $memberId = hub_playground_tts_member_id($db, trim($token));
+        $memberId = hub_playground_tts_member_id($db, trim($token), $mode);
         return [
             'ok' => true,
             'execution_profiles' => hub_playground_tts_profiles_for_member($db, $memberId, false),
@@ -248,10 +257,10 @@ function hub_playground_voice_profile_draft_result(): array
     ];
 }
 
-function hub_playground_voice_profile_draft_prefill(PDO $db, string $token, int $profileId): ?string
+function hub_playground_voice_profile_draft_prefill(PDO $db, string $token, int $profileId, string $mode = 'tts'): ?string
 {
     try {
-        $memberId = hub_playground_tts_member_id($db, trim($token));
+        $memberId = hub_playground_tts_member_id($db, trim($token), $mode);
         $profile = hub_get_voice_profile($db, $profileId);
         return $profile && (int)$profile['owner_member_id'] === $memberId ? (string)($profile['prompt_text'] ?? '') : null;
     } catch (Throwable) {
@@ -264,10 +273,10 @@ function hub_playground_voice_profile_selected_id(array $post): int
     return max(0, (int)($post['voice_profile_id'] ?? 0));
 }
 
-function hub_playground_voice_profile_dispatch(PDO $db, string $action, string $token, array $post, array $files): array
+function hub_playground_voice_profile_dispatch(PDO $db, string $action, string $token, array $post, array $files, string $mode = 'tts'): array
 {
     try {
-        $memberId = hub_playground_tts_member_id($db, trim($token));
+        $memberId = hub_playground_tts_member_id($db, trim($token), $mode);
         $operation = match ($action) {
             'voice_profile_upload' => hub_create_uploaded_voice_profile($db, $memberId, is_array($files['reference_wav'] ?? null) ? $files['reference_wav'] : [], [
                 'name' => (string)($post['voice_profile_name'] ?? ''),

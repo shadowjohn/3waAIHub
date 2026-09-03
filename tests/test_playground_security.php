@@ -215,3 +215,22 @@ hub_test('playground draft postback keeps the selected owned profile for confirm
         'confirmation profile select must render the postback profile as selected'
     );
 });
+
+hub_test('playground exposes BreezyVoice as a scoped Ultimate Clone profile workflow', function (): void {
+    $playground = (string)file_get_contents(HUB_ROOT . '/admin/playground.php');
+    $profiles = (string)file_get_contents(HUB_ROOT . '/admin/_playground_voice_profiles.php');
+    $customerAccounts = (string)file_get_contents(HUB_ROOT . '/app/customer_accounts.php');
+
+    hub_test_assert(
+        function_exists('hub_playground_voice_profile_mode')
+        && hub_playground_voice_profile_mode('tts')
+        && hub_playground_voice_profile_mode('voice_generate_breezy')
+        && !hub_playground_voice_profile_mode('edge_tts')
+        && str_contains($playground, "'voice_generate_breezy' => ['label' => 'BreezyVoice Taiwan Mandarin Clone'")
+        && str_contains($playground, "'mode' => 'ultimate_clone'")
+        && str_contains($playground, 'hub_playground_voice_profile_mode($selectedMode)')
+        && str_contains($profiles, "hub_gateway_authenticate_api_token(\$db, \$mode")
+        && str_contains($customerAccounts, "'voice_generate_breezy'"),
+        'BreezyVoice Playground must use its own API scope and fixed Ultimate Clone payload'
+    );
+});

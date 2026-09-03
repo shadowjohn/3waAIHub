@@ -361,7 +361,7 @@ function hub_list_customer_usage(PDO $db, int $userId): array
 
 function hub_playground_supported_modes(): array
 {
-    return ['hello', 'translate', 'ocr', 'yolo', 'sam3', 'bioclip', 'paligemma2', 'tts', 'edge_tts', 'chat', 'photo', 'audio', 'speech_transcribe', 'speech_transcribe_fast_zh', 'background_remove', 'image-tools', 'taiwan_address', 'web_capture', 'facebook_crawl'];
+    return ['hello', 'translate', 'ocr', 'yolo', 'sam3', 'bioclip', 'paligemma2', 'tts', 'voice_generate_breezy', 'edge_tts', 'chat', 'photo', 'audio', 'speech_transcribe', 'speech_transcribe_fast_zh', 'background_remove', 'image-tools', 'taiwan_address', 'web_capture', 'facebook_crawl'];
 }
 
 function hub_playground_parse_response(int $status, string $rawHeaders, string $contentType, string $body, int $elapsedMs): array

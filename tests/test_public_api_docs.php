@@ -1695,7 +1695,7 @@ hub_test('Agent manifest smoke validates live-contract metadata without Pack inf
 
 hub_test('Admin API docs architecture keeps one shared canonical inventory', function (): void {
     $adminDocs = (string)file_get_contents(HUB_ROOT . '/admin/api_docs.php');
-    hub_test_assert(preg_match('/^\s*\$user\s*=\s*hub_require_system_admin\(\$db\);$/m', $adminDocs) === 1, 'admin API docs must require a system admin');
+    hub_test_assert(preg_match('/^\s*\$user\s*=\s*hub_require_system_admin\(\$db\);\r?$/m', $adminDocs) === 1, 'admin API docs must require a system admin');
     hub_test_assert(str_contains($adminDocs, "require_once __DIR__ . '/../app/public_api_docs.php';"), 'admin API docs must load the shared public docs helpers');
     hub_test_assert(substr_count($adminDocs, 'hub_public_api_services($db)') === 1, 'admin API docs must load canonical live contracts exactly once');
     foreach ([

@@ -47,6 +47,17 @@ function hub_public_api_mode_url(string $mode): string
     return hub_public_api_base_url() . '?mode=' . rawurlencode($mode);
 }
 
+/**
+ * 文件中的 curl 範例需保留 URL 的百分比編碼；PHP 的 escapeshellarg() 在 Windows
+ * 會移除百分比字元，故 Windows PowerShell 一律使用單引號字串。
+ */
+function hub_public_api_shell_argument(string $value): string
+{
+    return hub_platform_id() === 'windows'
+        ? "'" . str_replace("'", "''", $value) . "'"
+        : escapeshellarg($value);
+}
+
 function hub_public_api_service_health_docs(?string $apiUrl = null, ?string $clusterUrl = null): array
 {
     $apiUrl ??= hub_public_api_base_url();
@@ -74,8 +85,8 @@ function hub_public_api_service_health_docs(?string $apiUrl = null, ?string $clu
     return [
         'local_url' => $apiUrl . $query,
         'cluster_url' => $clusterUrl . $query,
-        'local_curl' => 'curl -sS -H "Authorization: Bearer <TOKEN>" ' . escapeshellarg($apiUrl . $query),
-        'cluster_curl' => 'curl -sS -H "Authorization: Bearer <TOKEN>" ' . escapeshellarg($clusterUrl . $query),
+        'local_curl' => 'curl -sS -H "Authorization: Bearer <TOKEN>" ' . hub_public_api_shell_argument($apiUrl . $query),
+        'cluster_curl' => 'curl -sS -H "Authorization: Bearer <TOKEN>" ' . hub_public_api_shell_argument($clusterUrl . $query),
         'response' => json_encode($response, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE),
         'reasons' => [
             'service_not_found',
@@ -1488,9 +1499,7 @@ function hub_public_api_examples(array $service): array
     $isWindows = hub_platform_id() === 'windows';
     $curlExecutable = $isWindows ? 'curl.exe' : 'curl';
     $continuation = $isWindows ? '`' : '\\';
-    $quoteArgument = static fn (string $value): string => $isWindows
-        ? "'" . str_replace("'", "''", $value) . "'"
-        : escapeshellarg($value);
+    $quoteArgument = static fn (string $value): string => hub_public_api_shell_argument($value);
     $jsPrefix = '';
     if ($method === 'GET') {
         $curl = $curlExecutable . ' -H "Authorization: Bearer <TOKEN>" ' . $quoteArgument($url);

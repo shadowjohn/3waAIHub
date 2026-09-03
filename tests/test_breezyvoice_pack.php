@@ -115,7 +115,8 @@ hub_test('BreezyVoice Pack is an on-demand Taiwan Mandarin ultimate clone contra
         && ($job['runner']['entrypoint'] ?? null) === ['/app/voice_generate.sh']
         && ($job['runner']['args'] ?? null) === ['{workspace}', '{input_dir}', '{output_dir}', '{input_dir}/runner_config.json']
         && ($job['runner']['accelerator'] ?? '') === 'gpu'
-        && ($job['runner']['required_vram_mb'] ?? 0) === 4096,
+        && ($job['runner']['required_vram_mb'] ?? 0) === 4096
+        && !array_key_exists('workspace_user', $job['runner']),
         'BreezyVoice must pin its CUDA 12 isolated-GPU runner without a shell'
     );
     $generatedCompose = hub_generate_pack_compose($pack, 'breezy-compose-test', 18101);
