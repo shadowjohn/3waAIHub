@@ -608,14 +608,14 @@ function hub_task_worker_output_line(array $task, ?array $latest): string
     return 'task ' . $taskId . ' ' . $taskType . ' status=' . $status;
 }
 
-function hub_promote_due_waiting_gpu_task(PDO $db): bool
+function hub_promote_due_waiting_gpu_task(PDO $db, ?array &$beginStats = null): bool
 {
     if ($db->inTransaction()) {
         throw new LogicException('waiting_gpu_promotion_transaction_required');
     }
 
     $now = hub_now();
-    hub_sqlite_begin_immediate($db);
+    hub_sqlite_begin_immediate($db, $beginStats);
     try {
         $resource = $db->query("SELECT state FROM runtime_resource_leases WHERE resource_key = 'gpu:0'")->fetchColumn();
         if ($resource !== 'available') {
@@ -723,13 +723,15 @@ function hub_facebook_wait_for_profile(PDO $db, int $taskId, array $run, int $ba
     }
 }
 
-function hub_promote_due_waiting_profile_task(PDO $db): bool
+function hub_promote_due_waiting_profile_task(PDO $db, ?array &$beginStats = null): bool
 {
     if ($db->inTransaction()) {
         throw new LogicException('waiting_profile_promotion_transaction_required');
     }
     $now = hub_now();
-    $db->exec('BEGIN IMMEDIATE');
+    $ownsTransaction = false;
+    hub_sqlite_begin_immediate($db, $beginStats);
+    $ownsTransaction = true;
     try {
         $candidates = $db->prepare(
             "SELECT t.*, r.id AS runtime_id
@@ -792,6 +794,7 @@ function hub_promote_due_waiting_profile_task(PDO $db): bool
         }
         if (!is_array($selected)) {
             $db->exec('COMMIT');
+            $ownsTransaction = false;
             return false;
         }
         $taskStmt = $db->prepare(
@@ -812,13 +815,18 @@ function hub_promote_due_waiting_profile_task(PDO $db): bool
         $runStmt->execute([':id' => (int)$selected['runtime_id'], ':task_id' => (int)$selected['id']]);
         if ($taskStmt->rowCount() !== 1 || $runStmt->rowCount() !== 1) {
             $db->exec('ROLLBACK');
+            $ownsTransaction = false;
             return false;
         }
         $db->exec('COMMIT');
+        $ownsTransaction = false;
         return true;
     } catch (Throwable $e) {
-        if ($db->inTransaction()) {
-            $db->rollBack();
+        if ($ownsTransaction) {
+            try {
+                $db->exec('ROLLBACK');
+            } catch (Throwable) {
+            }
         }
         throw $e;
     }
@@ -838,14 +846,25 @@ function hub_claim_next_task(PDO $db, ?array $supportedTaskTypes = null, ?callab
         return null;
     }
 
-    hub_promote_due_waiting_gpu_task($db);
-    hub_promote_due_waiting_profile_task($db);
-
     $beginRequestedNs = hrtime(true);
-    $db->beginTransaction();
-    $txStartedNs = hrtime(true);
-    $txBeginAt = hub_runtime_telemetry_timestamp();
+    $beginStats = [];
+    $preClaimLockWaitMs = 0.0;
+    $preClaimRetryCount = 0;
+    $ownsTransaction = false;
+    $txStartedNs = null;
+    $txBeginAt = null;
     try {
+        hub_promote_due_waiting_gpu_task($db, $beginStats);
+        $preClaimLockWaitMs += (float)($beginStats['lock_wait_ms'] ?? 0.0);
+        $preClaimRetryCount += (int)($beginStats['retry_count'] ?? 0);
+        hub_promote_due_waiting_profile_task($db, $beginStats);
+        $preClaimLockWaitMs += (float)($beginStats['lock_wait_ms'] ?? 0.0);
+        $preClaimRetryCount += (int)($beginStats['retry_count'] ?? 0);
+        $beginRequestedNs = hrtime(true);
+        hub_sqlite_begin_immediate($db, $beginStats);
+        $ownsTransaction = true;
+        $txStartedNs = hrtime(true);
+        $txBeginAt = hub_runtime_telemetry_timestamp();
         $placeholders = implode(', ', array_fill(0, count($taskTypes), '?'));
         $stmt = $db->prepare(
             "SELECT * FROM tasks
@@ -865,16 +884,15 @@ function hub_claim_next_task(PDO $db, ?array $supportedTaskTypes = null, ?callab
                  SET status = 'running', lock_token = :lock_token, started_at = :started_at, updated_at = :updated_at
                  WHERE id = :id AND status = 'queued' AND lock_token IS NULL"
             );
-            $claimStartedNs = hrtime(true);
             $claim->execute([
                 ':lock_token' => $token,
                 ':started_at' => $now,
                 ':updated_at' => $now,
                 ':id' => (int)$task['id'],
             ]);
-            $lockWaitMs = hub_runtime_telemetry_elapsed_ms($claimStartedNs, hrtime(true));
             if ($claim->rowCount() === 1) {
-                $db->commit();
+                $db->exec('COMMIT');
+                $ownsTransaction = false;
                 $txEndedNs = hrtime(true);
                 $txCommitAt = hub_runtime_telemetry_timestamp();
                 $claimedTask = hub_get_task($db, (int)$task['id']);
@@ -884,16 +902,16 @@ function hub_claim_next_task(PDO $db, ?array $supportedTaskTypes = null, ?callab
                         'action' => 'claim',
                         'variant' => 'task',
                         'outcome' => 'committed',
-                        'tx_mode' => 'deferred',
+                        'tx_mode' => 'immediate',
                         'tx_begin_at' => $txBeginAt,
                         'tx_commit_at' => $txCommitAt,
                         'pre_tx_ms' => hub_runtime_telemetry_elapsed_ms($actionStartedNs, $beginRequestedNs),
-                        'lock_wait_ms' => $lockWaitMs,
-                        'lock_wait_kind' => 'first_write_upper_bound',
+                        'lock_wait_ms' => $preClaimLockWaitMs + (float)($beginStats['lock_wait_ms'] ?? 0.0),
+                        'lock_wait_kind' => 'begin_immediate',
                         'tx_ms' => hub_runtime_telemetry_elapsed_ms($txStartedNs, $txEndedNs),
                         'post_tx_ms' => hub_runtime_telemetry_elapsed_ms($txEndedNs, $emitStartedNs),
                         'total_ms' => hub_runtime_telemetry_elapsed_ms($actionStartedNs, $emitStartedNs),
-                        'retry_count' => 0,
+                        'retry_count' => $preClaimRetryCount + (int)($beginStats['retry_count'] ?? 0),
                         'skipped_ticks' => 0,
                     ]);
                 }
@@ -902,10 +920,36 @@ function hub_claim_next_task(PDO $db, ?array $supportedTaskTypes = null, ?callab
             }
         }
 
-        $db->commit();
+        $db->exec('COMMIT');
+        $ownsTransaction = false;
         return null;
     } catch (Throwable $e) {
-        $db->rollBack();
+        if ($ownsTransaction) {
+            try {
+                $db->exec('ROLLBACK');
+            } catch (Throwable) {
+            }
+        }
+        if (!empty($beginStats['lock_exhausted']) && in_array('pack_job', $taskTypes, true)) {
+            $txEndedNs = hrtime(true);
+            $emitStartedNs = hrtime(true);
+            hub_runtime_telemetry_emit([
+                'action' => 'claim',
+                'variant' => 'task',
+                'outcome' => 'lock_exhausted',
+                'tx_mode' => 'immediate',
+                'tx_begin_at' => $txBeginAt,
+                'tx_commit_at' => hub_runtime_telemetry_timestamp(),
+                'pre_tx_ms' => hub_runtime_telemetry_elapsed_ms($actionStartedNs, $beginRequestedNs),
+                'lock_wait_ms' => $preClaimLockWaitMs + (float)($beginStats['lock_wait_ms'] ?? 0.0),
+                'lock_wait_kind' => 'begin_immediate',
+                'tx_ms' => $txStartedNs === null ? 0.0 : hub_runtime_telemetry_elapsed_ms($txStartedNs, $txEndedNs),
+                'post_tx_ms' => hub_runtime_telemetry_elapsed_ms($txEndedNs, $emitStartedNs),
+                'total_ms' => hub_runtime_telemetry_elapsed_ms($actionStartedNs, $emitStartedNs),
+                'retry_count' => $preClaimRetryCount + (int)($beginStats['retry_count'] ?? 0),
+                'skipped_ticks' => 0,
+            ]);
+        }
         throw $e;
     }
 }

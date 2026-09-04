@@ -400,14 +400,84 @@ hub_test('pack queue claim emits one sanitized committed task telemetry event', 
     hub_test_assert(is_array($task) && ($task['status'] ?? null) === 'running', 'pack task must commit before telemetry');
     hub_test_assert(count($events) === 1, 'pack queue claim must emit exactly one claim/task event');
     $event = $events[0];
-    hub_test_assert(($event['outcome'] ?? null) === 'committed' && ($event['tx_mode'] ?? null) === 'deferred'
-        && ($event['lock_wait_kind'] ?? null) === 'first_write_upper_bound' && ($event['retry_count'] ?? null) === 0
+    hub_test_assert(($event['outcome'] ?? null) === 'committed' && ($event['tx_mode'] ?? null) === 'immediate'
+        && ($event['lock_wait_kind'] ?? null) === 'begin_immediate' && ($event['retry_count'] ?? null) === 0
         && ($event['skipped_ticks'] ?? null) === 0, 'pack queue claim telemetry fields mismatch');
     $fields = ['action', 'variant', 'outcome', 'tx_mode', 'tx_begin_at', 'tx_commit_at', 'pre_tx_ms', 'lock_wait_ms', 'lock_wait_kind', 'tx_ms', 'post_tx_ms', 'total_ms', 'retry_count', 'skipped_ticks', 'schema_version', 'observed_at'];
     sort($fields);
     $eventFields = array_keys($event);
     sort($eventFields);
     hub_test_assert($eventFields === $fields, 'pack queue claim telemetry must not expose task identity or input fields');
+});
+
+hub_test('pack queue claim reports retries from pre-claim SQLite writer reservations', function (): void {
+    $db = hub_test_reset_db();
+    hub_test_runtime_telemetry_enqueue_pack_job($db);
+    $before = count(hub_test_runtime_telemetry_events());
+
+    hub_test_runtime_telemetry_with_sqlite_writer_lock(150000, static function (string $attemptPath): void {
+        $db = hub_test_runtime_telemetry_locking_pdo($attemptPath);
+        $task = hub_claim_next_task($db, ['pack_job']);
+
+        hub_test_assert(is_array($task) && ($task['status'] ?? null) === 'running', 'pack task must claim after a short SQLite writer lock');
+    });
+
+    $events = hub_test_runtime_telemetry_claim_events_after($before, 'task');
+    hub_test_assert(count($events) === 1 && ($events[0]['tx_mode'] ?? null) === 'immediate'
+        && ($events[0]['lock_wait_kind'] ?? null) === 'begin_immediate'
+        && (int)($events[0]['retry_count'] ?? 0) > 0, 'pack queue claim must report pre-claim BEGIN IMMEDIATE retries');
+});
+
+hub_test('pack queue claim emits lock-exhausted telemetry when pre-claim SQLite reservation remains locked', function (): void {
+    $db = hub_test_reset_db();
+    hub_test_runtime_telemetry_enqueue_pack_job($db);
+    $before = count(hub_test_runtime_telemetry_events());
+
+    hub_test_runtime_telemetry_with_sqlite_writer_lock(700000, static function (string $attemptPath): void {
+        $db = hub_test_runtime_telemetry_locking_pdo($attemptPath);
+        hub_test_assert(hub_test_throws(static fn (): ?array => hub_claim_next_task($db, ['pack_job'])), 'pack task claim must throw after pre-claim BEGIN IMMEDIATE retries exhaust');
+    });
+
+    $events = hub_test_runtime_telemetry_claim_events_after($before, 'task');
+    hub_test_assert(count($events) === 1 && ($events[0]['outcome'] ?? null) === 'lock_exhausted'
+        && ($events[0]['tx_mode'] ?? null) === 'immediate'
+        && (float)($events[0]['tx_ms'] ?? -1) === 0.0
+        && (int)($events[0]['retry_count'] ?? 0) === 6, 'pack queue pre-claim lock exhaustion telemetry mismatch');
+});
+
+hub_test('command queue claim retries a short SQLite writer lock and emits immediate telemetry', function (): void {
+    $db = hub_test_reset_db();
+    $jobId = hub_enqueue_command_job($db, 'docker_prune_check', null, [], null, '127.0.0.1');
+    $before = count(hub_test_runtime_telemetry_events());
+
+    hub_test_runtime_telemetry_with_sqlite_writer_lock(150000, static function (string $attemptPath) use ($jobId): void {
+        $db = hub_test_runtime_telemetry_locking_pdo($attemptPath, true);
+        $job = hub_claim_next_command_job($db);
+
+        hub_test_assert((int)($job['id'] ?? 0) === $jobId && ($job['status'] ?? null) === 'running', 'command job must claim after a short SQLite writer lock');
+    });
+
+    $events = hub_test_runtime_telemetry_claim_events_after($before, 'command');
+    hub_test_assert(count($events) === 1 && ($events[0]['tx_mode'] ?? null) === 'immediate'
+        && ($events[0]['lock_wait_kind'] ?? null) === 'begin_immediate'
+        && (int)($events[0]['retry_count'] ?? 0) > 0, 'command queue claim must report BEGIN IMMEDIATE retries');
+});
+
+hub_test('command queue claim emits lock-exhausted telemetry when SQLite remains locked', function (): void {
+    $db = hub_test_reset_db();
+    hub_enqueue_command_job($db, 'docker_prune_check', null, [], null, '127.0.0.1');
+    $before = count(hub_test_runtime_telemetry_events());
+
+    hub_test_runtime_telemetry_with_sqlite_writer_lock(700000, static function (string $attemptPath): void {
+        $db = hub_test_runtime_telemetry_locking_pdo($attemptPath);
+        hub_test_assert(hub_test_throws(static fn (): ?array => hub_claim_next_command_job($db)), 'command claim must throw after BEGIN IMMEDIATE retries exhaust');
+    });
+
+    $events = hub_test_runtime_telemetry_claim_events_after($before, 'command');
+    hub_test_assert(count($events) === 1 && ($events[0]['outcome'] ?? null) === 'lock_exhausted'
+        && ($events[0]['tx_mode'] ?? null) === 'immediate'
+        && (float)($events[0]['tx_ms'] ?? -1) === 0.0
+        && (int)($events[0]['retry_count'] ?? 0) === 6, 'command queue lock exhaustion telemetry mismatch');
 });
 
 hub_test('pack runtime claim emits committed telemetry for a claimed runtime no-match', function (): void {

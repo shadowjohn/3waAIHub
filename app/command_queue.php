@@ -238,8 +238,17 @@ function hub_list_command_jobs(PDO $db, int $limit = 20): array
 
 function hub_claim_next_command_job(PDO $db, ?callable $eligible = null): ?array
 {
-    $db->beginTransaction();
+    $actionStartedNs = hrtime(true);
+    $beginRequestedNs = hrtime(true);
+    $beginStats = [];
+    $ownsTransaction = false;
+    $txStartedNs = null;
+    $txBeginAt = null;
     try {
+        hub_sqlite_begin_immediate($db, $beginStats);
+        $ownsTransaction = true;
+        $txStartedNs = hrtime(true);
+        $txBeginAt = hub_runtime_telemetry_timestamp();
         // runtime worker 需要略過另一個 worker 已負責的 job，維持同一個原子 claim 流程。
         $jobs = $db->query(
             "SELECT * FROM command_jobs
@@ -254,7 +263,8 @@ function hub_claim_next_command_job(PDO $db, ?callable $eligible = null): ?array
             }
         }
         if (!$job) {
-            $db->commit();
+            $db->exec('COMMIT');
+            $ownsTransaction = false;
             return null;
         }
 
@@ -271,11 +281,57 @@ function hub_claim_next_command_job(PDO $db, ?callable $eligible = null): ?array
             ':updated_at' => $now,
             ':id' => (int)$job['id'],
         ]);
-        $db->commit();
+        $db->exec('COMMIT');
+        $ownsTransaction = false;
+        $txEndedNs = hrtime(true);
+        $txCommitAt = hub_runtime_telemetry_timestamp();
+        $claimedJob = hub_get_command_job($db, (int)$job['id']);
+        $emitStartedNs = hrtime(true);
+        hub_runtime_telemetry_emit([
+            'action' => 'claim',
+            'variant' => 'command',
+            'outcome' => 'committed',
+            'tx_mode' => 'immediate',
+            'tx_begin_at' => $txBeginAt,
+            'tx_commit_at' => $txCommitAt,
+            'pre_tx_ms' => hub_runtime_telemetry_elapsed_ms($actionStartedNs, $beginRequestedNs),
+            'lock_wait_ms' => (float)($beginStats['lock_wait_ms'] ?? 0.0),
+            'lock_wait_kind' => 'begin_immediate',
+            'tx_ms' => hub_runtime_telemetry_elapsed_ms($txStartedNs, $txEndedNs),
+            'post_tx_ms' => hub_runtime_telemetry_elapsed_ms($txEndedNs, $emitStartedNs),
+            'total_ms' => hub_runtime_telemetry_elapsed_ms($actionStartedNs, $emitStartedNs),
+            'retry_count' => (int)($beginStats['retry_count'] ?? 0),
+            'skipped_ticks' => 0,
+        ]);
 
-        return hub_get_command_job($db, (int)$job['id']);
+        return $claimedJob;
     } catch (Throwable $e) {
-        $db->rollBack();
+        if ($ownsTransaction) {
+            try {
+                $db->exec('ROLLBACK');
+            } catch (Throwable) {
+            }
+        }
+        if (!empty($beginStats['lock_exhausted'])) {
+            $txEndedNs = hrtime(true);
+            $emitStartedNs = hrtime(true);
+            hub_runtime_telemetry_emit([
+                'action' => 'claim',
+                'variant' => 'command',
+                'outcome' => 'lock_exhausted',
+                'tx_mode' => 'immediate',
+                'tx_begin_at' => $txBeginAt,
+                'tx_commit_at' => hub_runtime_telemetry_timestamp(),
+                'pre_tx_ms' => hub_runtime_telemetry_elapsed_ms($actionStartedNs, $beginRequestedNs),
+                'lock_wait_ms' => (float)($beginStats['lock_wait_ms'] ?? 0.0),
+                'lock_wait_kind' => 'begin_immediate',
+                'tx_ms' => $txStartedNs === null ? 0.0 : hub_runtime_telemetry_elapsed_ms($txStartedNs, $txEndedNs),
+                'post_tx_ms' => hub_runtime_telemetry_elapsed_ms($txEndedNs, $emitStartedNs),
+                'total_ms' => hub_runtime_telemetry_elapsed_ms($actionStartedNs, $emitStartedNs),
+                'retry_count' => (int)($beginStats['retry_count'] ?? 0),
+                'skipped_ticks' => 0,
+            ]);
+        }
         throw $e;
     }
 }
