@@ -1736,7 +1736,35 @@ function hub_pack_job_breezyvoice_runner_config_valid(array $config): bool
         && $config['max_input_chars'] === 2000;
 }
 
-function hub_pack_job_breezyvoice_artifact_contract_valid(string $workspace, array $config): bool
+function hub_pack_job_breezyvoice_pronunciation_metadata_valid(mixed $value): bool
+{
+    if (!is_array($value) || array_is_list($value) || count($value) !== 5
+        || array_diff(array_keys($value), ['rule_revision', 'spoken_text', 'model_text', 'applied_rule_ids', 'characters']) !== []) {
+        return false;
+    }
+    if (!is_int($value['rule_revision'] ?? null) || $value['rule_revision'] < 1
+        || !is_string($value['spoken_text'] ?? null) || $value['spoken_text'] === '' || strlen($value['spoken_text']) > 32768
+        || !is_string($value['model_text'] ?? null) || $value['model_text'] === '' || strlen($value['model_text']) > 32768
+        || !is_array($value['applied_rule_ids'] ?? null) || !array_is_list($value['applied_rule_ids']) || count($value['applied_rule_ids']) > 306
+        || !is_array($value['characters'] ?? null) || count($value['characters']) !== 3
+        || array_diff(array_keys($value['characters']), ['source', 'spoken', 'model']) !== []) {
+        return false;
+    }
+    foreach ($value['characters'] as $count) {
+        if (!is_int($count) || $count < 1 || $count > 8192) {
+            return false;
+        }
+    }
+    foreach ($value['applied_rule_ids'] as $id) {
+        if (!is_string($id) || $id === '' || strlen($id) > 128 || preg_match('/[\x00-\x1F\x7F]/', $id) === 1) {
+            return false;
+        }
+    }
+
+    return count($value['applied_rule_ids']) === count(array_unique($value['applied_rule_ids']));
+}
+
+function hub_pack_job_breezyvoice_artifact_contract_valid(string $workspace, array $config, array $taskInput = []): bool
 {
     if (!hub_pack_job_breezyvoice_runner_config_valid($config)) {
         return false;
@@ -1781,6 +1809,12 @@ function hub_pack_job_breezyvoice_artifact_contract_valid(string $workspace, arr
             'channels' => $config['channels'],
             'sample_format' => $config['sample_format'],
         ]) {
+        return false;
+    }
+
+    $usesPronunciation = array_key_exists('pronunciation', $taskInput);
+    if ($usesPronunciation !== array_key_exists('pronunciation', $metadata)
+        || ($usesPronunciation && !hub_pack_job_breezyvoice_pronunciation_metadata_valid($metadata['pronunciation']))) {
         return false;
     }
 
@@ -4082,7 +4116,7 @@ function hub_run_pack_job_task(PDO $db, array $task, array $options = []): array
         }
         if ((string)($task['pack_id'] ?? '') === 'tts-breezyvoice'
             && (string)($task['job'] ?? '') === 'synthesize'
-            && !hub_pack_job_breezyvoice_artifact_contract_valid($workspace, $runnerConfig ?? [])) {
+            && !hub_pack_job_breezyvoice_artifact_contract_valid($workspace, $runnerConfig ?? [], (array)($task['input'] ?? []))) {
             return hub_pack_job_adapter_failure(
                 $db,
                 $taskId,

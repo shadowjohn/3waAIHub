@@ -426,6 +426,67 @@ def test_validates_mocked_wav_and_writes_best_effort_provenance(tmp_path: Path, 
         assert (generated.getnchannels(), generated.getframerate(), generated.getsampwidth()) == (1, 22050, 2)
 
 
+def test_pronunciation_rules_compile_only_synthesis_text_and_keep_upstream_output_private(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
+    fixture = make_job_fixture(tmp_path)
+    request_path = fixture["input_dir"] / "request.json"
+    request = json.loads(request_path.read_text(encoding="utf-8"))
+    request["text"] = "AI 協助檢查 K&N 204-1 濾心。"
+    request["pronunciation"] = {
+        "character_overrides": [{
+            "id": "character:axian:ai",
+            "match": "AI",
+            "kind": "spoken_form",
+            "value": "欸哀",
+        }],
+        "request_overrides": [{
+            "id": "podcast:49:filter",
+            "match": "濾心",
+            "kind": "bopomofo",
+            "readings": ["ㄌㄩ4", "ㄒㄧㄣ1"],
+        }],
+    }
+    request_path.write_text(json.dumps(request), encoding="utf-8")
+    config = json.loads((fixture["config"]).read_text(encoding="utf-8"))
+    runtime = {
+        "model": config["model"],
+        "model_revision": config["model_revision"],
+        "model_dir": fixture["model_dir"],
+        "cosyvoice": object(),
+        "bopomofo_converter": object(),
+    }
+    received: list[dict[str, object]] = []
+
+    def fake_inference(_: dict[str, object], __: dict[str, object], compiled: dict[str, object], ___: Path, output: Path) -> None:
+        received.append(compiled)
+        print(compiled["text"])
+        write_pcm16_wav(output)
+
+    def fake_normalizer(value: str) -> str:
+        print(value)
+        return value.replace("欸哀 ", "欸哀")
+
+    monkeypatch.setattr(job, "breezy_text_normalize", fake_normalizer)
+    monkeypatch.setattr(job, "load_runtime_for_pronunciation", lambda _: runtime)
+    monkeypatch.setattr(job, "run_resident_inference", fake_inference)
+    metadata = run_fixture(fixture)
+
+    assert received == [{
+        "text": "欸哀協助檢查 K and N 二零四之一 濾[:ㄌㄩ4]心[:ㄒㄧㄣ1]。",
+        "seed": 123,
+        "transcript": fixture["transcript"],
+        "pronunciation": request["pronunciation"],
+    }]
+    assert request["prompt_text"] == fixture["transcript"]
+    assert metadata["pronunciation"] == {
+        "rule_revision": 1,
+        "spoken_text": "欸哀 協助檢查 K and N 二零四之一 濾心。",
+        "model_text": "欸哀協助檢查 K and N 二零四之一 濾[:ㄌㄩ4]心[:ㄒㄧㄣ1]。",
+        "applied_rule_ids": ["global:kn", "character:axian:ai", "podcast:49:filter"],
+        "characters": {"source": 21, "spoken": 25, "model": 37},
+    }
+    assert "欸哀" not in capsys.readouterr().out
+
+
 def test_resident_mode_preloads_the_breezy_model(monkeypatch: pytest.MonkeyPatch) -> None:
     import app
 

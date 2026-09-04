@@ -49,6 +49,7 @@ def preload_resident_model() -> dict[str, Any]:
     global _RESIDENT_MODEL
     with _MODEL_WORK_LOCK:
         if _RESIDENT_MODEL is None:
+            job.pronunciation.load_global_rules()
             _RESIDENT_MODEL = job.load_resident_model(Path(os.getenv("BREEZYVOICE_MODEL_DIR", "/models/breezyvoice")))
         return _RESIDENT_MODEL
 

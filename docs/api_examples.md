@@ -807,6 +807,37 @@ curl -X POST "<BASE_URL>?mode=voice_generate" \
 
 `mode=clone` uses one managed `voice_profile_id`; it does not accept a server path. Upload byte limits come from the resolved Pack. Use the async modes for work larger than a sync diagnostic sample.
 
+### `mode=voice_generate_breezy` pronunciation override
+
+`voice_generate_breezy` remains an Ultimate Clone request with one owned,
+confirmed `voice_profile_task_id`. Add `pronunciation` only to `synthesize`,
+never to `profile_prepare`:
+
+```bash
+curl -X POST "<BASE_URL>?mode=voice_generate_breezy" \
+  -H "Authorization: Bearer <TOKEN>" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "operation":"synthesize",
+    "mode":"ultimate_clone",
+    "voice_profile_task_id":"<PROFILE_TASK_ID>",
+    "text":"AI 協助檢查 K&N 204-1 濾心。",
+    "pronunciation":{
+      "character_overrides":[{"id":"character:axian:ai","match":"AI","kind":"spoken_form","value":"欸哀"}],
+      "request_overrides":[{"id":"podcast:49:filter","match":"濾心","kind":"bopomofo","readings":["ㄌㄩ4","ㄒㄧㄣ1"]}]
+    }
+  }'
+```
+
+The two caller layers have at most 50 rules combined. `match` is literal, not
+regex; clients must never send Breezy `[:...]` syntax. Hub global rules are
+lower priority, then character rules, then one-request rules. Successful
+`synthesis_metadata.json` (downloaded through the normal authenticated task
+artifact URL) includes `rule_revision`, `spoken_text`, `model_text`,
+`applied_rule_ids`, and source/spoken/model character counts; the original
+`text` remains the article/subtitle value.
+Invalid input returns `invalid_pronunciation_rules` (400).
+
 ### Callback, polling, download, and ACK
 
 An operator registers the HTTPS callback target and secret out of band; a submitter passes only its pre-registered `callback_target` alias. Terminal events are `task.completed` and `task.failed`. Verify the exact raw JSON body with the target secret:

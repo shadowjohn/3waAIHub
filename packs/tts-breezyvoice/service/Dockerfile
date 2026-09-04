@@ -73,9 +73,10 @@ RUN chmod -R a+rwX /opt/huggingface
 ENV HF_HUB_OFFLINE=1 \
     TRANSFORMERS_OFFLINE=1
 
-COPY service/app.py service/job.py service/provision.py ./
+COPY service/app.py service/job.py service/provision.py service/pronunciation.py service/pronunciation-rules.json ./
 COPY jobs/voice_generate.sh jobs/provision_models.sh ./
-RUN python3 -m py_compile /app/app.py /app/job.py /app/provision.py \
+RUN python3 -m py_compile /app/app.py /app/job.py /app/provision.py /app/pronunciation.py \
+    && python3 -c 'from pronunciation import load_global_rules; load_global_rules()' \
     && chmod 0755 /app/job.py /app/provision.py /app/voice_generate.sh /app/provision_models.sh \
     && ln -s /app/voice_generate.sh /app/breezyvoice-synthesize \
     && ln -s /app/provision_models.sh /app/breezyvoice-provision-models

@@ -1839,6 +1839,9 @@ function hub_api_pack_job_task_submit(PDO $db, array $route, array $authContext)
         if ($e->getMessage() === 'invalid_request') {
             return hub_gateway_error(400, 'invalid_request', 'Pack job request does not match the Pack contract');
         }
+        if ($e->getMessage() === 'invalid_pronunciation_rules') {
+            return hub_gateway_error(400, 'invalid_pronunciation_rules', 'pronunciation rules are invalid');
+        }
         if ($e->getMessage() === 'voice_profile_required') {
             return hub_gateway_error(400, 'voice_profile_required', 'voice cloning requires exactly one owned managed voice profile');
         }
@@ -2097,7 +2100,11 @@ function hub_pack_job_task_has_valid_content_length(): bool
 
 function hub_pack_job_task_input(array $input, array $route): array
 {
-    if (hub_pack_job_task_has_forbidden_control($input)) {
+    $controlInput = $input;
+    if (($route['pack_id'] ?? '') === 'tts-breezyvoice') {
+        unset($controlInput['pronunciation']);
+    }
+    if (hub_pack_job_task_has_forbidden_control($controlInput)) {
         throw new InvalidArgumentException('forbidden_task_control');
     }
     $allowed = array_fill_keys((array)($route['input_fields'] ?? []), true);
@@ -2109,7 +2116,8 @@ function hub_pack_job_task_input(array $input, array $route): array
             }
             continue;
         }
-        if (!is_string($key) || !isset($allowed[$key]) || !is_scalar($value)) {
+        $pronunciationObject = ($route['pack_id'] ?? '') === 'tts-breezyvoice' && $key === 'pronunciation' && is_array($value);
+        if (!is_string($key) || !isset($allowed[$key]) || (!is_scalar($value) && !$pronunciationObject)) {
             throw new InvalidArgumentException('forbidden_task_control');
         }
         $filtered[$key] = $value;

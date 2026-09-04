@@ -137,6 +137,15 @@ for provenance but is **best effort** (`seed_applied=false`): it is not a
 byte-identical sampling guarantee. The first Pack is Taiwan Mandarin (`zh-TW`),
 not a Taiwanese Hokkien/Taigi model.
 
+Direct `voice_generate_breezy` `synthesize` may also send the bounded
+`pronunciation` object documented by its native Pack contract. Its
+`character_overrides` and `request_overrides` are literal caller-owned rules;
+the Router relays no raw Breezy marker syntax. Invalid data returns the stable
+`invalid_pronunciation_rules` 400 error. The original `text` and the
+`profile_prepare` transcript are unchanged. Applied, private `spoken_text` /
+`model_text` provenance is available only in the authenticated
+`synthesis_metadata.json` artifact, never as a Router task-result field.
+
 This Pack is published only when the selected station reports a ready runtime.
 On this Windows GTX 1080 station it uses the separate
 `windows-wsl2-linux-docker` target and Pascal CUDA 11.8 profile; direct

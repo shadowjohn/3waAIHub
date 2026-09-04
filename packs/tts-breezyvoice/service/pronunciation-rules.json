@@ -1,0 +1,12 @@
+{
+  "schema_version": "breezy_pronunciation_rules_v1",
+  "revision": 1,
+  "rules": [
+    {
+      "id": "global:kn",
+      "match": "K&N 204-1",
+      "kind": "spoken_form",
+      "value": "K and N 二零四之一"
+    }
+  ]
+}

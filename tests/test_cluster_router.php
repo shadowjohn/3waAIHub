@@ -6288,6 +6288,7 @@ hub_test('cluster voice docs expose only opaque profile task workflow fields', f
             'generic_voice_invalid' => 400,
             'generic_voice_candidate_count_invalid' => 400,
             'generic_voice_forbidden_input' => 400,
+            'invalid_pronunciation_rules' => 400,
         ] as $code => $status) {
             hub_test_assert(($errors[$code]['http_status'] ?? null) === $status, 'Cluster voice error status mismatch: ' . $code);
         }
@@ -6383,6 +6384,14 @@ hub_test('cluster voice dispatch safely relays only documented child error pairs
                 'generic voice child validation must have a stable Cluster relay rule: ' . $code
             );
         }
+        hub_test_assert(
+            (hub_cluster_voice_generate_relay_errors()['invalid_pronunciation_rules'] ?? null) === [
+                'public_code' => 'invalid_pronunciation_rules',
+                'http_status' => 400,
+                'message' => 'pronunciation rules are invalid',
+            ],
+            'Breezy pronunciation validation must have a stable Cluster relay rule'
+        );
 
         foreach (hub_cluster_voice_generate_relay_errors() as $childCode => $rule) {
             $response = hub_cluster_dispatch($db, 'voice_generate', $request, [

@@ -903,6 +903,7 @@ function hub_cluster_voice_generate_relay_errors(): array
 {
     return [
         'invalid_request' => ['public_code' => 'invalid_request', 'http_status' => 400, 'message' => 'request is invalid'],
+        'invalid_pronunciation_rules' => ['public_code' => 'invalid_pronunciation_rules', 'http_status' => 400, 'message' => 'pronunciation rules are invalid'],
         'voice_profile_wav_invalid' => ['public_code' => 'voice_profile_wav_invalid', 'http_status' => 400, 'message' => 'reference audio is invalid'],
         'voice_profile_transcript_invalid' => ['public_code' => 'voice_profile_transcript_invalid', 'http_status' => 400, 'message' => 'voice profile transcript is invalid'],
         'voice_profile_not_found' => ['public_code' => 'profile_task_not_found', 'http_status' => 404, 'message' => 'voice profile task was not found'],

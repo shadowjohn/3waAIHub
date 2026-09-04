@@ -79,6 +79,8 @@ VoxCPM2 可在服務設定切為 `resident` 後重啟：首次 `voice_generate` 
 
 `generic_synthesize` 是另一條不建立 Voice Profile 或 preset 的聲音探索路徑。它只接受 `text`、`gender`、`age_bucket`、`role_note` 與 1–3 個候選；`text` 仍是唯一朗讀內容。Hub 以內部 `design` 候選回傳 `candidate_id`、不透明 `audio_artifact_id`／`audio_url`、`seed`、`voice_design_revision` 與 `style_status=unverified`；用候選的 opaque `audio_artifact_id` 展開回傳的 `ack_url_template` 後 ACK。Router 的 generic 完成結果另有同樣不透明 ID 的 `cluster_artifact_index`，僅含 type、MIME、size 與 SHA-256 完整性描述，不含 child task、Profile、節點或路徑。性別、年齡與角色備註目前僅保留為私有配方偏好，不保證音色，也不會被拼入台詞；WAV 加配方可供追溯，但 runtime 版本變更後不保證相同位元輸出。Router 在送出時按一般可用站台選擇，子工作被接受後才固定在該站；不會讀取或建立受管 Profile。
 
+`voice_generate_breezy` 的 `synthesize` 可選擇受限 `pronunciation` 規則：Hub 以版本控制的全域規則，再套用角色與單次規則，將安全讀法編譯後交給 BreezyVoice。原始 `text`、文章／字幕與 `profile_prepare.prompt_text` 都不改；實際 `spoken_text`、`model_text`、規則 revision 與套用 ID 只留在已驗證的 `synthesis_metadata.json` artifact。詳見 [BreezyVoice Pack](packs/tts-breezyvoice/README.md)。
+
 `manual_vision` 是已實作但尚未執行真實模型/GPU 驗收的窄介面 English DocVQA；驗收成功前不會出現在 Router inventory。它以一張 PNG/JPEG 加一個英文問題回傳英文答案，不是逐字 OCR，也不取代既有 PaliGemma2、PP-OCRv5 或 `pdf2html`。呼叫範例見 [`docs/api_examples.md`](docs/api_examples.md#manual-vision-docvqa)，節點準備、WSL、驗收與 Cluster 發布流程見 [`docs/operations/manual-vision-docvqa.md`](docs/operations/manual-vision-docvqa.md)。
 
 ## 平台能力矩陣
