@@ -315,6 +315,32 @@ class AppTest(unittest.TestCase):
         colorize.assert_called_once_with(png_bytes(), backend="cpu")
         self.assert_png_response(response, model="ddcolor-modelscope", backend="cpu", size=(2, 3))
 
+    def test_process_releases_colorizer_before_loading_an_upsampler(self) -> None:
+        self.app._COLORIZER_CACHE = ((self.root, "cpu"), object())
+        upsampler = FakeUpsampler()
+        with patch.object(self.app, "verify_ready", return_value={}), patch.object(
+            model_runtime, "build_upsampler", return_value=upsampler
+        ):
+            response = self.process(model="realesrgan-x4plus", backend="cpu")
+
+        self.assertIsNone(self.app._COLORIZER_CACHE)
+        self.assert_png_response(response, model="realesrgan-x4plus", backend="cpu", size=(8, 12))
+
+    def test_release_model_caches_removes_conflicting_runtime_modules(self) -> None:
+        names = {
+            "basicsr": types.ModuleType("basicsr"),
+            "basicsr.archs": types.ModuleType("basicsr.archs"),
+            "ddcolor": types.ModuleType("ddcolor"),
+            "realesrgan": types.ModuleType("realesrgan"),
+        }
+        with patch.dict(sys.modules, names), patch.object(sys, "path", ["/opt/ddcolor", *sys.path]):
+            self.app._release_model_caches()
+            self.assertNotIn("basicsr", sys.modules)
+            self.assertNotIn("basicsr.archs", sys.modules)
+            self.assertNotIn("ddcolor", sys.modules)
+            self.assertNotIn("realesrgan", sys.modules)
+            self.assertNotIn("/opt/ddcolor", sys.path)
+
     def test_process_replaces_the_single_cached_upsampler_after_a_to_b_to_a(self) -> None:
         first_a, b, second_a = FakeUpsampler(), FakeUpsampler(), FakeUpsampler()
         with patch.object(self.app, "verify_ready", return_value={}) as verify_ready, patch.object(model_runtime, "verify_ready", return_value={}), patch.object(

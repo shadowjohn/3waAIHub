@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import gc
 import io
 import os
+import sys
 import threading
 import time
 from pathlib import Path
@@ -23,6 +25,24 @@ RUNTIME_LEVEL = "L5-benchmark-ready"
 _INFERENCE_LOCK = threading.Lock()
 _UPSAMPLER_CACHE = None
 _COLORIZER_CACHE = None
+
+
+def _release_model_caches() -> None:
+    global _UPSAMPLER_CACHE, _COLORIZER_CACHE
+    _UPSAMPLER_CACHE = None
+    _COLORIZER_CACHE = None
+    source_root = str(Path(os.getenv("DDCOLOR_SOURCE_DIR", "/opt/ddcolor")))
+    sys.path[:] = [entry for entry in sys.path if str(entry) != source_root]
+    for name in tuple(sys.modules):
+        if name == "basicsr" or name.startswith("basicsr.") or name == "ddcolor" or name.startswith("ddcolor.") or name == "realesrgan" or name.startswith("realesrgan."):
+            sys.modules.pop(name, None)
+    gc.collect()
+    try:
+        import torch
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+    except Exception:
+        pass
 
 
 def model_dir() -> Path:
@@ -75,6 +95,7 @@ def _run(source_bytes: bytes, *, model: str, backend: str, outscale: int) -> tup
             raise
         key = (root, selected.alias, backend)
         if _UPSAMPLER_CACHE is None or _UPSAMPLER_CACHE[0] != key:
+            _release_model_caches()
             verify_ready(root)
             upsampler = model_runtime.build_upsampler(selected.alias, backend, root / selected.filename)
             _UPSAMPLER_CACHE = (key, upsampler)
@@ -119,6 +140,7 @@ def _run_colorize(source_bytes: bytes, *, backend: str) -> tuple[bytes, dict[str
             raise
         key = (root, backend)
         if _COLORIZER_CACHE is None or _COLORIZER_CACHE[0] != key:
+            _release_model_caches()
             colorizer = colorize_runtime.build_colorizer(backend, root)
             _COLORIZER_CACHE = (key, colorizer)
         else:
