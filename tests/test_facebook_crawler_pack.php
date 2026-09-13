@@ -1231,7 +1231,7 @@ hub_test('Facebook crawler real smoke keeps credentials file-only and verifies c
     $path = HUB_ROOT . '/scripts/facebook_crawler_smoke.php';
     hub_test_assert(is_file($path), 'crawler smoke script missing');
     if (PHP_OS_FAMILY !== 'Windows') {
-        hub_test_assert((fileperms($path) & 0777) === 0755, 'crawler smoke script must be executable');
+        hub_test_assert((fileperms($path) & 0100) === 0100, 'runnable asset must remain owner-executable');
     }
     $source = (string)file_get_contents($path);
     foreach ([

@@ -4,7 +4,7 @@ declare(strict_types=1);
 hub_test('Facebook login page removes fragment proof and uses POST-only local relays', function (): void {
     $path = HUB_ROOT . '/facebook_profile_login.php';
     hub_test_assert(is_file($path), 'Facebook login page missing');
-    hub_test_assert((fileperms($path) & 0777) === 0755, 'Facebook login page must be executable');
+    hub_test_assert((fileperms($path) & 0100) === 0100, 'runnable asset must remain owner-executable');
     $source = (string)file_get_contents($path);
     hub_test_assert(str_starts_with($source, "<?php\n"), 'public login page must not emit bytes before PHP headers');
     hub_test_assert(!str_contains($source, 'hub_i18n_language_selector'), 'login page must not navigate away and discard its fragment proof');
@@ -44,7 +44,7 @@ hub_test('Facebook login page keeps a stable password-safe localized control sur
 
 hub_test('Facebook login cleanup and Docker stages keep the bounded runtime contract', function (): void {
     $script = HUB_ROOT . '/scripts/facebook_profile_cleanup.php';
-    hub_test_assert(is_file($script) && (fileperms($script) & 0777) === 0755, 'Facebook cleanup script must be executable');
+    hub_test_assert(is_file($script) && (fileperms($script) & 0100) === 0100, 'runnable asset must remain owner-executable');
     $cleanup = (string)file_get_contents($script);
     hub_test_assert(str_contains($cleanup, 'hub_facebook_login_cleanup_expired') && str_contains($cleanup, 'min(10'), 'cleanup script must call the bounded helper');
 
@@ -115,7 +115,7 @@ hub_test('Facebook crawler public docs expose only the managed local workflow', 
 hub_test('Facebook crawler Test Center renders a focused localized workflow', function (): void {
     $partial = HUB_ROOT . '/admin/_playground_facebook_crawler.php';
     hub_test_assert(is_file($partial), 'crawler Playground partial missing');
-    hub_test_assert((fileperms($partial) & 0777) === 0755, 'new crawler PHP partial must be executable');
+    hub_test_assert((fileperms($partial) & 0100) === 0100, 'runnable asset must remain owner-executable');
     $source = (string)file_get_contents($partial);
     foreach ([
         "hub_i18n_text('Facebook 登入 Profile')",

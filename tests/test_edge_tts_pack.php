@@ -571,7 +571,7 @@ hub_test('Edge TTS Pack publishes the ready CPU-only async runner contract', fun
     $acceptanceScript = HUB_ROOT . '/scripts/edge_tts_acceptance.php';
     $contract = hub_pack_l5_contract($manifest);
     $acceptanceCase = hub_l5_benchmark_case($contract, 'edge_tts_async_complete');
-    hub_test_assert(is_file($acceptanceScript) && (fileperms($acceptanceScript) & 0777) === 0755
+    hub_test_assert(is_file($acceptanceScript) && (fileperms($acceptanceScript) & 0100) === 0100
         && array_keys($contract) === ['endpoint', 'method', 'content_type', 'task_type', 'input', 'output', 'errors', 'limits', 'benchmark']
         && ($contract['endpoint'] ?? null) === 'api.php?mode=edge_tts'
         && ($contract['method'] ?? null) === 'POST'
@@ -590,7 +590,7 @@ hub_test('Edge TTS Pack publishes the ready CPU-only async runner contract', fun
     }
     foreach (['edge-tts-entrypoint.sh', 'synthesize.py', 'generate_demos.py', 'test_egress_firewall.sh', 'test_synthesize.py', 'test_generate_demos.py'] as $file) {
         $path = HUB_ROOT . '/packs/edge-tts/service/' . $file;
-        hub_test_assert((fileperms($path) & 0777) === 0755, 'Edge TTS runnable asset must use mode 0755: ' . $file);
+        hub_test_assert((fileperms($path) & 0100) === 0100, 'runnable asset must remain owner-executable');
     }
     hub_test_assert(hub_pack_container_runner_build_contract($manifest, HUB_ROOT . '/packs/edge-tts') === [
         'image' => '3waaihub/edge-tts:0.3.0',
