@@ -2552,7 +2552,7 @@ function hub_generate_image_tools_compose(array $pack, string $serviceKey, int $
                 . '      - "127.0.0.1:${' . $portEnv . ':-' . $localPort . '}:' . $internalPort . '"' . "\n";
         }
         $compose .= "    restart: unless-stopped\n";
-        if ($worker) {
+        if ($volumes) {
             $compose .= "    volumes:\n";
             foreach ($volumes as $volume) {
                 $compose .= '      - ' . json_encode($volume, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_THROW_ON_ERROR) . "\n";

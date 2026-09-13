@@ -931,7 +931,10 @@ hub_test('image-tools resident Compose topology keeps workers internal', functio
     }
     hub_test_assert(substr_count($compose, 'gpus: all') === 2, 'checked-in resident Compose must grant GPUs only to both workers');
     hub_test_assert(substr_count($compose, 'IMAGE_TOOLS_ROLE:') === 3, 'checked-in resident Compose must declare ingress and worker roles');
-    hub_test_assert(substr_count($compose, '/models/image-tools/realesrgan:ro') === 2 && substr_count($compose, '/models/image-tools/ddcolor:ro') === 2, 'checked-in resident workers must mount both model roots read-only');
+    $apiCompose = explode("  image-tools-upscale:\n", $compose, 2)[0];
+    hub_test_assert(str_contains($apiCompose, '/models/image-tools/realesrgan:ro') && str_contains($apiCompose, '/models/image-tools/ddcolor:ro'), 'checked-in resident ingress must mount both model roots read-only for explicit CPU requests');
+    hub_test_assert(!str_contains($apiCompose, 'gpus: all'), 'checked-in resident ingress must not gain GPU access for CPU requests');
+    hub_test_assert(substr_count($compose, '/models/image-tools/realesrgan:ro') === 3 && substr_count($compose, '/models/image-tools/ddcolor:ro') === 3, 'checked-in resident ingress and workers must mount both model roots read-only');
 });
 
 hub_test('image-tools public mode permits internal hyphens only', function (): void {
@@ -990,6 +993,9 @@ hub_test('image-tools public mode permits internal hyphens only', function (): v
     hub_test_assert(substr_count($mainCompose, 'gpus: all') === 2, 'image-tools-main resident Compose must grant GPUs only to workers');
     hub_test_assert(substr_count($mainCompose, 'IMAGE_TOOLS_ROLE:') === 3 && str_contains($mainCompose, 'IMAGE_TOOLS_UPSCALE_WORKER_URL: "http://image-tools-upscale:8000"') && str_contains($mainCompose, 'IMAGE_TOOLS_COLORIZE_WORKER_URL: "http://image-tools-colorize:8000"'), 'image-tools-main ingress must target both internal workers');
     $modelsRoot = (string)(hub_get_storage_paths($mainDb)['AIHUB_MODELS_DIR'] ?? '');
+    $mainApiCompose = explode("  image-tools-upscale:\n", $mainCompose, 2)[0];
+    hub_test_assert(str_contains($mainApiCompose, '"' . $modelsRoot . '/image-tools/realesrgan:/models/image-tools/realesrgan:ro"') && str_contains($mainApiCompose, '"' . $modelsRoot . '/image-tools/ddcolor:/models/image-tools/ddcolor:ro"'), 'generated resident ingress must mount both managed model roots read-only for explicit CPU requests');
+    hub_test_assert(!str_contains($mainApiCompose, 'gpus: all'), 'generated resident ingress must not gain GPU access for CPU requests');
     hub_test_assert(str_contains($mainCompose, '"' . $modelsRoot . '/image-tools/realesrgan:/models/image-tools/realesrgan:ro"'), 'image-tools-main generated Compose must embed its managed model mount for the standalone L4a smoke command');
     hub_test_assert(str_contains($mainCompose, '"' . $modelsRoot . '/image-tools/ddcolor:/models/image-tools/ddcolor:ro"'), 'image-tools-main generated Compose must embed its managed DDColor model mount');
     hub_test_assert(!str_contains($mainCompose, '${AIHUB_MODELS_DIR}'), 'image-tools-main generated Compose must not require a shell model-root variable for the standalone L4a smoke command');
@@ -1004,8 +1010,8 @@ hub_test('image-tools public mode permits internal hyphens only', function (): v
         hub_test_assert($mainService !== null, 'image-tools-main service must remain available for Compose regeneration');
         hub_write_service_compose($mainDb, $mainService);
         $regeneratedCompose = (string)file_get_contents(hub_path((string)$mainService['compose_file']));
-        hub_test_assert(substr_count($regeneratedCompose, '"' . $customModelsRoot . '/image-tools/realesrgan:/models/image-tools/realesrgan:ro"') === 2, 'every resident worker must use the current custom Real-ESRGAN model root');
-        hub_test_assert(substr_count($regeneratedCompose, '"' . $customModelsRoot . '/image-tools/ddcolor:/models/image-tools/ddcolor:ro"') === 2, 'every resident worker must use the current custom DDColor root');
+        hub_test_assert(substr_count($regeneratedCompose, '"' . $customModelsRoot . '/image-tools/realesrgan:/models/image-tools/realesrgan:ro"') === 3, 'resident ingress and workers must use the current custom Real-ESRGAN model root');
+        hub_test_assert(substr_count($regeneratedCompose, '"' . $customModelsRoot . '/image-tools/ddcolor:/models/image-tools/ddcolor:ro"') === 3, 'resident ingress and workers must use the current custom DDColor root');
         hub_test_assert(!str_contains($regeneratedCompose, '${AIHUB_MODELS_DIR}'), 'image-tools-main regenerated Compose must not require a shell model-root variable');
     } finally {
         if (is_dir($customModelsRoot) && !is_link($customModelsRoot) && !rmdir($customModelsRoot)) {

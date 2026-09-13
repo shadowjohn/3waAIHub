@@ -18,6 +18,9 @@ services:
       IMAGE_TOOLS_UPSCALE_WORKER_URL: http://image-tools-upscale:8000
       IMAGE_TOOLS_COLORIZE_WORKER_URL: http://image-tools-colorize:8000
     restart: unless-stopped
+    volumes:
+      - "${AIHUB_MODELS_DIR:-/DATA/models}/image-tools/realesrgan:/models/image-tools/realesrgan:ro"
+      - "${AIHUB_MODELS_DIR:-/DATA/models}/image-tools/ddcolor:/models/image-tools/ddcolor:ro"
   image-tools-upscale:
     image: 3waaihub/image-tools:0.1.2
     gpus: all
