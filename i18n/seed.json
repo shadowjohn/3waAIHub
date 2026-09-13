@@ -4288,5 +4288,30 @@
         "title": "準備 CKIP 字幕資產",
         "lang": "en",
         "trans": "Prepare CKIP subtitle assets"
+    },
+    {
+        "title": "準備 PaliGemma 2 模型",
+        "lang": "en",
+        "trans": "Prepare PaliGemma 2 model"
+    },
+    {
+        "title": "執行 PaliGemma 2 CUDA 驗收",
+        "lang": "en",
+        "trans": "Run PaliGemma 2 CUDA acceptance"
+    },
+    {
+        "title": "準備 BreezyVoice 模型",
+        "lang": "en",
+        "trans": "Prepare BreezyVoice model"
+    },
+    {
+        "title": "準備 Manual Vision 模型",
+        "lang": "en",
+        "trans": "Prepare Manual Vision model"
+    },
+    {
+        "title": "執行 Manual Vision 驗收",
+        "lang": "en",
+        "trans": "Run Manual Vision acceptance"
     }
 ]
