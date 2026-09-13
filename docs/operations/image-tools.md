@@ -12,13 +12,13 @@
 
 ### DDColor 黑白變彩色 staging
 
-DDColor source 固定為 `piddnad/DDColor@2adb63f2656ac41cbdf7b894cddd94121a3faf13`，權重固定為 `piddnad/DDColor-models@e9e7b527709c8aeb2f5e1bf701e72fd468a13baa` 的 `ddcolor_modelscope.pth`。先建置 0.1.1 image，再以可寫入的 model mount 執行一次 provision；正式服務仍只讀掛載模型。
+DDColor source 固定為 `piddnad/DDColor@2adb63f2656ac41cbdf7b894cddd94121a3faf13`，權重固定為 `piddnad/DDColor-models@e9e7b527709c8aeb2f5e1bf701e72fd468a13baa` 的 `ddcolor_modelscope.pth`。先建置 0.1.2 image，再以可寫入的 model mount 執行一次 provision；正式服務仍只讀掛載模型。
 
 ```bash
 docker compose -f data/services/image-tools-main/docker-compose.generated.yml build
 docker run --rm --user 0 \
   -v /DATA/models/image-tools:/models/image-tools \
-  3waaihub-image-tools-main:0.1.1 \
+  3waaihub-image-tools-main:0.1.2 \
   python3 /app/provision_colorize_assets.py
 ```
 
@@ -26,9 +26,9 @@ provisioner 只接受 HTTPS allowlist redirect，下載後驗證 911,950,059 byt
 
 ## 安裝與 preflight
 
-預設是 GPU-first 安裝：保留 `IMAGE_TOOLS_USE_GPU=1`、Docker NVIDIA runtime 與 CUDA driver，並確認 Docker 可看見 GPU。Hub preflight 會檢查可用 VRAM 加上 `AIHUB_GPU_VRAM_SAFETY_MARGIN_MB`；`backend=auto` 才會在不符合時改選 CPU。
+預設是 GPU-first 安裝：保留 `IMAGE_TOOLS_USE_GPU=1`、Docker NVIDIA runtime 與 CUDA driver，並確認 Docker 可看見 GPU。Hub preflight 會檢查可用 VRAM 與 `AIHUB_GPU_VRAM_SAFETY_MARGIN_MB`。GPU 啟用的 `resident_dual` 在容量不足時拒絕啟動（`resident_vram_insufficient`）；resident ingress 的 `backend=auto` 若遇到 worker 未 ready，會回 `runtime_not_ready`。`on_demand` 或 GPU-disabled 路徑才保留 `backend=auto` 依 GPU 可用性／Hub preflight 改選 CPU 的既有行為。
 
-明確 CPU 安裝可設 `IMAGE_TOOLS_USE_GPU=0`，重新產生 Compose 後不應含 `gpus: all`。client 可送 `backend=cpu`；明確 `backend=cuda` 在 GPU／VRAM 不可用時必須回 `backend_unavailable`，不允許無聲 fallback。
+明確 CPU 安裝可設 `IMAGE_TOOLS_USE_GPU=0`，重新產生 Compose 後使用單容器 `on_demand` mode／role，且不應含 `gpus: all`。client 可送 `backend=cpu`；明確 `backend=cuda` 在 GPU／VRAM 不可用時必須回 `backend_unavailable`，不允許無聲 fallback。
 
 完成 staging 後，以非 secret 的管理 token 跑 health、Docker/CUDA preflight 與同步 smoke。確認 `/health` 仍正確表示 runtime 狀態；不要把 Docker build 或 mock test 當作真實模型 acceptance。
 
@@ -50,7 +50,7 @@ nvidia-smi
 
 確認 ingress /health 與兩個 worker health 都 ready 後，第一筆請求已是 warm；在 `upscale`、`colorize` 間切換不得 reload 任一模型。3072 MiB/1024 MiB 是 provisional reservation，不是效能保證；只有完成 measured warm-start 與 4 MP benchmark 後才能調整。
 
-若需 rollback，將 `IMAGE_TOOLS_EXECUTION_MODE=on_demand` 儲存以重新產生 Compose，再 Restart `image-tools-main`；`on_demand` 是 VRAM 不足主機的明確 rollback path。
+若需 rollback，先保留原本的 resident 設定與三服務 Compose，在 Hub 執行 Stop `image-tools-main`，確認 ingress 與兩個 GPU worker 都已停止；再將 `IMAGE_TOOLS_EXECUTION_MODE=on_demand` 儲存以重新產生 Compose，最後 Start `image-tools-main`。必須先停止舊 project，因為重新產生的單容器 Compose 不包含舊 workers，直接 Restart 不會移除 orphan workers，仍會佔用 VRAM。`on_demand` 是 VRAM 不足主機的明確 rollback path。
 
 ## L4a model initialization smoke
 

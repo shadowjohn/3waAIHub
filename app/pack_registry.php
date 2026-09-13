@@ -2622,12 +2622,14 @@ function hub_generate_image_tools_compose(array $pack, string $serviceKey, int $
         . "      - " . HUB_RUNTIME_SETTINGS_FILENAME . "\n"
         . "    ports:\n"
         . '      - "127.0.0.1:${' . $portEnv . ':-' . $localPort . '}:' . $internalPort . '"' . "\n"
-        . "    restart: unless-stopped\n";
+        . "    restart: unless-stopped\n"
+        . "    environment:\n"
+        . "      IMAGE_TOOLS_EXECUTION_MODE: \"on_demand\"\n"
+        . "      IMAGE_TOOLS_ROLE: \"on_demand\"\n";
     if ($gpu) {
-        $compose .= "    gpus: all\n"
-            . "    environment:\n"
-            . '      NVIDIA_VISIBLE_DEVICES: "${GPU_VISIBLE_DEVICES:-all}"' . "\n"
-            . '      NVIDIA_DRIVER_CAPABILITIES: "compute,utility"' . "\n";
+        $compose .= '      NVIDIA_VISIBLE_DEVICES: "${GPU_VISIBLE_DEVICES:-all}"' . "\n"
+            . '      NVIDIA_DRIVER_CAPABILITIES: "compute,utility"' . "\n"
+            . "    gpus: all\n";
     }
     if ($volumes) {
         $compose .= "    volumes:\n";

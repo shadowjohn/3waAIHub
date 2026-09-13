@@ -1224,6 +1224,44 @@ hub_test('image-tools public mode permits internal hyphens only', function (): v
     hub_test_assert(!str_contains($onDemandCompose, 'image-tools-upscale:') && !str_contains($onDemandCompose, 'image-tools-colorize:'), 'on-demand mode must not emit unused resident workers');
 });
 
+hub_test('image-tools generated topology selects a matching Python runtime role', function (): void {
+    $pack = hub_get_pack('image-tools');
+    $defaults = array_column($pack['manifest']['env'], 'default', 'name');
+    $script = <<<'PY'
+import ast
+import json
+import os
+import sys
+from pathlib import Path
+
+# Exercise the actual role selector without importing the GPU/model dependencies.
+tree = ast.parse(Path(sys.argv[1]).read_text())
+tree.body = [node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name == "runtime_role"]
+exec(compile(tree, sys.argv[1], "exec"))
+os.environ.clear()
+os.environ.update(json.loads(sys.argv[2]))
+print(runtime_role())
+PY;
+    foreach ([[[], 'api', 3], [['IMAGE_TOOLS_USE_GPU' => '0'], 'on_demand', 1], [['IMAGE_TOOLS_EXECUTION_MODE' => 'on_demand'], 'on_demand', 1]] as [$settings, $role, $containers]) {
+        $env = array_replace($defaults, $settings);
+        $compose = hub_generate_pack_compose($pack, 'image-tools-main', 18113, $env);
+        hub_test_assert(substr_count($compose, 'container_name:') === $containers, 'generated topology must match the selected execution path');
+        $ingress = explode("  image-tools-upscale:\n", $compose, 2)[0];
+        preg_match_all('/^      (IMAGE_TOOLS_(?:EXECUTION_MODE|ROLE)): "([^"]+)"$/m', $ingress, $overrides, PREG_SET_ORDER);
+        foreach ($overrides as $override) {
+            $env[$override[1]] = $override[2];
+        }
+        $process = proc_open(['python3', '-c', $script, $pack['dir'] . '/service/app.py', json_encode($env, JSON_THROW_ON_ERROR)], [1 => ['pipe', 'w'], 2 => ['pipe', 'w']], $pipes);
+        hub_test_assert(is_resource($process), 'runtime role test process must start');
+        $stdout = stream_get_contents($pipes[1]);
+        $stderr = stream_get_contents($pipes[2]);
+        fclose($pipes[1]);
+        fclose($pipes[2]);
+        $exitCode = proc_close($process);
+        hub_test_assert($exitCode === 0 && trim($stdout) === $role, 'generated environment must select Python runtime role ' . $role . ': ' . $stdout . $stderr);
+    }
+});
+
 hub_test('image-tools publishes bounded Playground and documentation contracts', function (): void {
     hub_test_assert(in_array('image-tools', hub_playground_supported_modes(), true), 'image-tools must be selectable in the Playground');
 
@@ -1280,6 +1318,8 @@ hub_test('image-tools publishes bounded Playground and documentation contracts',
         && str_contains($readme, 'file_required, source_ambiguous, invalid_base64'), 'README must publish image-tools source, async, format, and error guidance');
     hub_test_assert(is_file($runbook), 'image-tools operation runbook must exist');
     $runbookText = (string)file_get_contents($runbook);
+    hub_test_assert(preg_match('/若需 rollback.*?先.*?Stop `image-tools-main`.*?再.*?IMAGE_TOOLS_EXECUTION_MODE=on_demand.*?最後.*?Start `image-tools-main`/s', $runbookText) === 1, 'rollback must stop the old resident project before saving on-demand settings and starting it');
+    hub_test_assert(str_contains($runbookText, '3waaihub-image-tools-main:' . $pack['manifest']['version']), 'provisioning command must use the current generated image tag');
     foreach (['resident_dual', 'on_demand', '3072 MiB', '1024 MiB', '4096 MiB', 'safety margin', 'ingress /health', 'worker health', 'resident_vram_insufficient', 'image-tools', 'image-tools-upscale', 'image-tools-colorize', 'evidence 不記錄 image、Token、Base64 或 private path'] as $needle) {
         hub_test_assert(str_contains($readme . "\n" . $runbookText, $needle), 'image-tools resident documentation is missing ' . $needle);
     }
