@@ -950,8 +950,12 @@ hub_test('Facebook proof relay is POST-only owner-logged and closes only with se
 
     $row = $db->query("SELECT * FROM facebook_crawler_profiles WHERE profile_id = " . $db->quote($profileId))->fetch();
     $statePath = hub_facebook_profile_state_path($row);
-    $closeTransport = static function (string $method, string $url, ?array $body) use ($statePath): array {
-        hub_test_assert($method === 'POST' && str_ends_with($url, '/close') && $body === [], 'close must relay only to broker close');
+    $closeTransport = static function (string $method, string $url, array|object|null $body) use ($statePath): array {
+        hub_test_assert(
+            $method === 'POST' && str_ends_with($url, '/close')
+                && $body instanceof stdClass && hub_json_encode($body) === '{}',
+            'close must relay an empty JSON object to the broker'
+        );
         file_put_contents($statePath, '{"cookies":[{"name":"c_user","value":"123","domain":".facebook.com"}]}');
         chmod($statePath, 0600);
         return ['status' => 200, 'content_type' => 'application/json', 'body' => '{"ok":true,"state":"logged_in","logged_in":true}'];

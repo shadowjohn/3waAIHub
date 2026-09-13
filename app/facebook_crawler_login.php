@@ -256,7 +256,7 @@ function hub_facebook_login_stop(PDO $db, string $containerName, callable $runne
     }
 }
 
-function hub_facebook_login_http_request(string $method, string $url, ?array $payload, int $maxBytes): array
+function hub_facebook_login_http_request(string $method, string $url, array|object|null $payload, int $maxBytes): array
 {
     if (!function_exists('curl_init') || !in_array($method, ['GET', 'POST'], true)) {
         return ['status' => 0, 'content_type' => '', 'body' => ''];
@@ -291,7 +291,7 @@ function hub_facebook_login_http_request(string $method, string $url, ?array $pa
     return ['status' => $status, 'content_type' => $contentType, 'body' => $ok === false ? '' : $body];
 }
 
-function hub_facebook_login_request(?callable $transport, string $method, int $port, string $path, ?array $payload, int $maxBytes): array
+function hub_facebook_login_request(?callable $transport, string $method, int $port, string $path, array|object|null $payload, int $maxBytes): array
 {
     if ($port < 1 || $port > 65535 || !in_array($path, ['/health', '/status', '/frame', '/input', '/credentials', '/close'], true)) {
         return ['status' => 0, 'content_type' => '', 'body' => ''];
@@ -850,7 +850,7 @@ function hub_facebook_login_relay_dispatch(
             return ['response' => $response, 'auth_context' => $authContext];
         }
 
-        $requestBody = $mode === 'facebook_profile_input' ? $payload : [];
+        $requestBody = $mode === 'facebook_profile_input' ? $payload : new stdClass();
         if ($mode !== 'facebook_profile_input' && $payload !== []) {
             throw new InvalidArgumentException('facebook_profile_invalid');
         }
