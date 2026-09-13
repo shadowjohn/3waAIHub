@@ -865,7 +865,7 @@ hub_test('image-tools Pack declares the L5 generic image-tools contract', functi
     $readme = (string)file_get_contents(HUB_ROOT . '/README.md');
     preg_match('/### image-tools Runtime Level\\n\\n(.*?)(?=\\n### |\\z)/s', $readme, $runtimeSection);
     $runtimeSection = (string)($runtimeSection[1] ?? '');
-    $l4aCommand = 'docker compose -f data/services/image-tools-main/docker-compose.generated.yml exec -T image-tools python3 /app/model_smoke.py --backend cpu';
+    $l4aCommand = 'docker compose -f data/services/image-tools-main/docker-compose.generated.yml exec -T image-tools-upscale python3 /app/model_smoke.py --backend cuda';
     $l5CudaCommand = 'php scripts/benchmark.php --service=image-tools-main --case=image_tools_cuda_upscale_golden';
     $l5CpuCommand = 'php scripts/benchmark.php --service=image-tools-main --case=image_tools_cpu_upscale_golden';
     hub_test_assert(str_contains($runtimeSection, '影像工具'), 'README image-tools runtime row must use the generic Chinese Pack identity');
