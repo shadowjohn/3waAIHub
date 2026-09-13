@@ -1280,6 +1280,9 @@ hub_test('image-tools publishes bounded Playground and documentation contracts',
         && str_contains($readme, 'file_required, source_ambiguous, invalid_base64'), 'README must publish image-tools source, async, format, and error guidance');
     hub_test_assert(is_file($runbook), 'image-tools operation runbook must exist');
     $runbookText = (string)file_get_contents($runbook);
+    foreach (['resident_dual', 'on_demand', '3072 MiB', '1024 MiB', '4096 MiB', 'safety margin', 'ingress /health', 'worker health', 'resident_vram_insufficient', 'image-tools', 'image-tools-upscale', 'image-tools-colorize', 'evidence 不記錄 image、Token、Base64 或 private path'] as $needle) {
+        hub_test_assert(str_contains($readme . "\n" . $runbookText, $needle), 'image-tools resident documentation is missing ' . $needle);
+    }
     foreach (['ready.json', 'SHA-256', 'Docker', 'CUDA', 'GPU-first', 'CPU', 'upscale_task', 'colorize', 'DDColor', 'task_status', 'artifact', 'cancellation', 'cleanup', 'rollback', 'retention', 'L4a-model-init-smoke'] as $needle) {
         hub_test_assert(str_contains($runbookText, $needle), 'image-tools runbook is missing ' . $needle);
     }
