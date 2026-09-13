@@ -2458,6 +2458,9 @@ function hub_pack_requests_gpu(array $manifest, string $serviceKey = '', array $
 function hub_generate_pack_compose(array $pack, string $serviceKey, int $localPort, array $envValues = [], ?array $storage = null): string
 {
     $manifest = $pack['manifest'];
+    if (($manifest['id'] ?? '') === 'image-tools') {
+        return hub_generate_image_tools_compose($pack, $serviceKey, $localPort, $envValues, $storage);
+    }
     if (($manifest['id'] ?? '') === 'translate-gemma12b') {
         return hub_generate_translate_gemma_compose($pack, $serviceKey, $localPort);
     }
@@ -2507,6 +2510,82 @@ function hub_generate_pack_compose(array $pack, string $serviceKey, int $localPo
     }
 
     $volumes = hub_generate_pack_storage_volumes($manifest, $serviceKey, $storage);
+    if ($volumes) {
+        $compose .= "    volumes:\n";
+        foreach ($volumes as $volume) {
+            $compose .= '      - ' . json_encode($volume, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_THROW_ON_ERROR) . "\n";
+        }
+    }
+
+    return $compose;
+}
+
+function hub_generate_image_tools_compose(array $pack, string $serviceKey, int $localPort, array $envValues = [], ?array $storage = null): string
+{
+    $manifest = $pack['manifest'];
+    $selector = $serviceKey === 'image-tools-main' ? 'image-tools' : $serviceKey;
+    $imageTag = hub_pack_image_tag($serviceKey, (string)($manifest['version'] ?? 'latest'));
+    $portEnv = hub_pack_port_env($manifest);
+    $internalPort = (int)($manifest['runtime']['default_internal_port'] ?? 8000);
+    $volumes = hub_generate_pack_storage_volumes($manifest, $serviceKey, $storage);
+    $gpu = hub_pack_requests_gpu($manifest, $serviceKey, $envValues);
+    $resident = $gpu && (($envValues['IMAGE_TOOLS_EXECUTION_MODE'] ?? 'resident_dual') === 'resident_dual');
+
+    $service = static function (string $name, string $role, bool $worker = false) use ($imageTag, $pack, $serviceKey, $selector, $portEnv, $localPort, $internalPort, $volumes): string {
+        $compose = "  {$name}:\n"
+            . "    image: {$imageTag}\n"
+            . "    build:\n"
+            . "      context: {$pack['dir']}/service\n"
+            . "    container_name: 3waaihub-{$serviceKey}" . ($name === $selector ? '' : "-{$role}") . "\n"
+            . "    env_file:\n"
+            . "      - " . HUB_RUNTIME_SETTINGS_FILENAME . "\n"
+            . "    environment:\n"
+            . "      IMAGE_TOOLS_ROLE: \"{$role}\"\n";
+        if ($worker) {
+            $compose .= '      NVIDIA_VISIBLE_DEVICES: "${GPU_VISIBLE_DEVICES:-all}"' . "\n"
+                . '      NVIDIA_DRIVER_CAPABILITIES: "compute,utility"' . "\n"
+                . "    gpus: all\n";
+        } else {
+            $compose .= '      IMAGE_TOOLS_UPSCALE_WORKER_URL: "http://' . $selector . '-upscale:' . $internalPort . '"' . "\n"
+                . '      IMAGE_TOOLS_COLORIZE_WORKER_URL: "http://' . $selector . '-colorize:' . $internalPort . '"' . "\n"
+                . '    ports:' . "\n"
+                . '      - "127.0.0.1:${' . $portEnv . ':-' . $localPort . '}:' . $internalPort . '"' . "\n";
+        }
+        $compose .= "    restart: unless-stopped\n";
+        if ($worker) {
+            $compose .= "    volumes:\n";
+            foreach ($volumes as $volume) {
+                $compose .= '      - ' . json_encode($volume, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_THROW_ON_ERROR) . "\n";
+            }
+        }
+
+        return $compose;
+    };
+
+    if ($resident) {
+        return "services:\n"
+            . $service($selector, 'api')
+            . $service($selector . '-upscale', 'upscale', true)
+            . $service($selector . '-colorize', 'colorize', true);
+    }
+
+    $compose = "services:\n"
+        . "  {$selector}:\n"
+        . "    image: {$imageTag}\n"
+        . "    build:\n"
+        . "      context: {$pack['dir']}/service\n"
+        . "    container_name: 3waaihub-{$serviceKey}\n"
+        . "    env_file:\n"
+        . "      - " . HUB_RUNTIME_SETTINGS_FILENAME . "\n"
+        . "    ports:\n"
+        . '      - "127.0.0.1:${' . $portEnv . ':-' . $localPort . '}:' . $internalPort . '"' . "\n"
+        . "    restart: unless-stopped\n";
+    if ($gpu) {
+        $compose .= "    gpus: all\n"
+            . "    environment:\n"
+            . '      NVIDIA_VISIBLE_DEVICES: "${GPU_VISIBLE_DEVICES:-all}"' . "\n"
+            . '      NVIDIA_DRIVER_CAPABILITIES: "compute,utility"' . "\n";
+    }
     if ($volumes) {
         $compose .= "    volumes:\n";
         foreach ($volumes as $volume) {

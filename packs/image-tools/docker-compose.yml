@@ -1,7 +1,6 @@
 services:
   image-tools:
-    image: 3waaihub/image-tools:0.1.1
-    gpus: all
+    image: 3waaihub/image-tools:0.1.2
     env_file:
       - runtime-settings.conf
     ports:
@@ -12,6 +11,36 @@ services:
       IMAGE_TOOLS_MODEL_DIR: ${IMAGE_TOOLS_MODEL_DIR:-/models/image-tools/realesrgan}
       IMAGE_TOOLS_COLORIZE_MODEL_DIR: ${IMAGE_TOOLS_COLORIZE_MODEL_DIR:-/models/image-tools/ddcolor}
       IMAGE_TOOLS_MAX_UPLOAD_MB: ${IMAGE_TOOLS_MAX_UPLOAD_MB:-50}
+      IMAGE_TOOLS_EXECUTION_MODE: ${IMAGE_TOOLS_EXECUTION_MODE:-resident_dual}
+      IMAGE_TOOLS_UPSCALE_RESIDENT_VRAM_MB: ${IMAGE_TOOLS_UPSCALE_RESIDENT_VRAM_MB:-3072}
+      IMAGE_TOOLS_COLORIZE_RESIDENT_VRAM_MB: ${IMAGE_TOOLS_COLORIZE_RESIDENT_VRAM_MB:-1024}
+      IMAGE_TOOLS_ROLE: api
+      IMAGE_TOOLS_UPSCALE_WORKER_URL: http://image-tools-upscale:8000
+      IMAGE_TOOLS_COLORIZE_WORKER_URL: http://image-tools-colorize:8000
+    restart: unless-stopped
+  image-tools-upscale:
+    image: 3waaihub/image-tools:0.1.2
+    gpus: all
+    env_file:
+      - runtime-settings.conf
+    environment:
+      IMAGE_TOOLS_ROLE: upscale
+      NVIDIA_VISIBLE_DEVICES: ${GPU_VISIBLE_DEVICES:-all}
+      NVIDIA_DRIVER_CAPABILITIES: compute,utility
+    restart: unless-stopped
+    volumes:
+      - "${AIHUB_MODELS_DIR:-/DATA/models}/image-tools/realesrgan:/models/image-tools/realesrgan:ro"
+      - "${AIHUB_MODELS_DIR:-/DATA/models}/image-tools/ddcolor:/models/image-tools/ddcolor:ro"
+  image-tools-colorize:
+    image: 3waaihub/image-tools:0.1.2
+    gpus: all
+    env_file:
+      - runtime-settings.conf
+    environment:
+      IMAGE_TOOLS_ROLE: colorize
+      NVIDIA_VISIBLE_DEVICES: ${GPU_VISIBLE_DEVICES:-all}
+      NVIDIA_DRIVER_CAPABILITIES: compute,utility
+    restart: unless-stopped
     volumes:
       - "${AIHUB_MODELS_DIR:-/DATA/models}/image-tools/realesrgan:/models/image-tools/realesrgan:ro"
       - "${AIHUB_MODELS_DIR:-/DATA/models}/image-tools/ddcolor:/models/image-tools/ddcolor:ro"
