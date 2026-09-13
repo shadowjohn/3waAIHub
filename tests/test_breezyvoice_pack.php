@@ -34,8 +34,8 @@ hub_test('BreezyVoice Pack is an on-demand Taiwan Mandarin ultimate clone contra
 
     hub_test_assert(
         array_keys($targets) === ['linux-docker', 'windows-wsl2-linux-docker']
-        && ($targets['linux-docker'] ?? null) === true
-        && ($targets['windows-wsl2-linux-docker'] ?? null) === true,
+        && !empty($targets['linux-docker']['supported'])
+        && !empty($targets['windows-wsl2-linux-docker']['supported']),
         'BreezyVoice must declare direct Linux and explicit Windows WSL targets'
     );
     hub_test_assert(

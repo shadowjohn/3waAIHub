@@ -1230,12 +1230,13 @@ L5 缺 checkpoint 時 `/health` 會 `ready=false` 並回 `model_not_present`；�
 `image-tools` 是「影像工具」Pack，可用獨立 operation 擴充本機影像處理；提供 Real-ESRGAN 單張圖片放大與 DDColor 黑白變彩色。Real-ESRGAN 已為 `L5-benchmark-ready`／`runtime_ready=true`；DDColor 使用另一份離線、checksum 驗證的 ModelScope snapshot，色彩化輸出是 AI 推測，不能當作歷史真實顏色。
 
 ```bash
-docker compose -f data/services/image-tools-main/docker-compose.generated.yml exec -T image-tools python3 /app/model_smoke.py --backend cpu
+docker compose -f data/services/image-tools-main/docker-compose.generated.yml exec -T image-tools-upscale python3 /app/model_smoke.py --backend cuda
 php scripts/benchmark.php --service=image-tools-main --case=image_tools_cuda_upscale_golden
 php scripts/benchmark.php --service=image-tools-main --case=image_tools_cpu_upscale_golden
 ```
 
 - 對外 mode 是 `image-tools`；operation 有同步 `upscale`、同步 `colorize`，以及非同步 `upscale_task`。
+- 預設 `resident_dual` 以 `image-tools` ingress 搭配 `image-tools-upscale`／`image-tools-colorize` 兩個內部 worker；VRAM 不足時可設 `on_demand` rollback。完整 3072 MiB + 1024 MiB = 4096 MiB 與 safety margin、health、restart 指引見操作手冊。
 - 來源只能二選一：multipart 的 `image` 或 `base64_string`。實際解碼後只接受 JPEG/JPG, PNG, WEBP, BMP；副檔名與 client MIME 不被信任。
 - 限制為 decoded source 50 MiB、單邊 8,192 px、同步 4,000,000 pixels、非同步 10,000,000 pixels、輸出 64,000,000 pixels，Gateway body 70 MiB。
 - `model` 僅接受 `realesrgan-x4plus`、`realesrgan-x4plus-anime`、`realesr-animevideov3-x2`、`realesr-animevideov3-x3`、`realesr-animevideov3-x4`；`backend` 僅接受 `auto|cuda|cpu`。明示 `cuda` 不會偷偷回退 CPU。

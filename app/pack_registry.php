@@ -210,6 +210,49 @@ function hub_image_tools_operation_route_definition(string $operation, string $b
     };
 }
 
+function hub_image_tools_resident_vram_budget(array $settings): int
+{
+    $schema = hub_get_pack_settings_schema('image-tools');
+    $total = 0;
+    foreach (['IMAGE_TOOLS_UPSCALE_RESIDENT_VRAM_MB', 'IMAGE_TOOLS_COLORIZE_RESIDENT_VRAM_MB'] as $key) {
+        $total += (int)hub_validate_service_setting_value($schema[$key], (string)($settings[$key] ?? ''));
+    }
+
+    return $total;
+}
+
+function hub_image_tools_resident_start_preflight(PDO $db, array $service, ?callable $gpuProbe = null): array
+{
+    $skip = ['ok' => true, 'reason' => null, 'skipped' => true];
+    if (($service['pack_id'] ?? '') !== 'image-tools') {
+        return $skip;
+    }
+    $settings = hub_service_settings_values($db, $service);
+    $schema = hub_get_pack_settings_schema('image-tools');
+    try {
+        foreach (['IMAGE_TOOLS_EXECUTION_MODE', 'IMAGE_TOOLS_USE_GPU'] as $key) {
+            $settings[$key] = hub_validate_service_setting_value($schema[$key], (string)($settings[$key] ?? ''));
+        }
+        if ($settings['IMAGE_TOOLS_EXECUTION_MODE'] !== 'resident_dual' || $settings['IMAGE_TOOLS_USE_GPU'] !== '1') {
+            return $skip;
+        }
+        $required = hub_image_tools_resident_vram_budget($settings);
+    } catch (InvalidArgumentException $error) {
+        return ['ok' => false, 'reason' => 'invalid_service_settings', 'message' => $error->getMessage()];
+    }
+    $margin = max(0, (int)hub_get_storage_setting($db, 'AIHUB_GPU_VRAM_SAFETY_MARGIN_MB'));
+    $probe = ($gpuProbe ?? 'hub_runtime_gpu_probe')();
+    $result = hub_runtime_gpu_preflight_result([], $required, $margin, $probe);
+    if (isset($probe['probe_error'])) {
+        $result['ok'] = false;
+        $result['reason'] = 'gpu_probe_failed';
+    } elseif (!$result['ok']) {
+        $result['reason'] = 'resident_vram_insufficient';
+    }
+
+    return $result + ['safety_margin_mb' => $margin, 'skipped' => false];
+}
+
 function hub_image_tools_cached_gpu_probe(PDO $db): array
 {
     $snapshot = hub_latest_host_metric_snapshot($db);
@@ -2458,6 +2501,9 @@ function hub_pack_requests_gpu(array $manifest, string $serviceKey = '', array $
 function hub_generate_pack_compose(array $pack, string $serviceKey, int $localPort, array $envValues = [], ?array $storage = null): string
 {
     $manifest = $pack['manifest'];
+    if (($manifest['id'] ?? '') === 'image-tools') {
+        return hub_generate_image_tools_compose($pack, $serviceKey, $localPort, $envValues, $storage);
+    }
     if (($manifest['id'] ?? '') === 'translate-gemma12b') {
         return hub_generate_translate_gemma_compose($pack, $serviceKey, $localPort);
     }
@@ -2507,6 +2553,84 @@ function hub_generate_pack_compose(array $pack, string $serviceKey, int $localPo
     }
 
     $volumes = hub_generate_pack_storage_volumes($manifest, $serviceKey, $storage);
+    if ($volumes) {
+        $compose .= "    volumes:\n";
+        foreach ($volumes as $volume) {
+            $compose .= '      - ' . json_encode($volume, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_THROW_ON_ERROR) . "\n";
+        }
+    }
+
+    return $compose;
+}
+
+function hub_generate_image_tools_compose(array $pack, string $serviceKey, int $localPort, array $envValues = [], ?array $storage = null): string
+{
+    $manifest = $pack['manifest'];
+    $selector = $serviceKey === 'image-tools-main' ? 'image-tools' : $serviceKey;
+    $imageTag = hub_pack_image_tag($serviceKey, (string)($manifest['version'] ?? 'latest'));
+    $portEnv = hub_pack_port_env($manifest);
+    $internalPort = (int)($manifest['runtime']['default_internal_port'] ?? 8000);
+    $volumes = hub_generate_pack_storage_volumes($manifest, $serviceKey, $storage);
+    $gpu = hub_pack_requests_gpu($manifest, $serviceKey, $envValues);
+    $resident = $gpu && (($envValues['IMAGE_TOOLS_EXECUTION_MODE'] ?? 'resident_dual') === 'resident_dual');
+
+    $service = static function (string $name, string $role, bool $worker = false) use ($imageTag, $pack, $serviceKey, $selector, $portEnv, $localPort, $internalPort, $volumes): string {
+        $compose = "  {$name}:\n"
+            . "    image: {$imageTag}\n"
+            . "    build:\n"
+            . "      context: {$pack['dir']}/service\n"
+            . "    container_name: 3waaihub-{$serviceKey}" . ($name === $selector ? '' : "-{$role}") . "\n"
+            . "    env_file:\n"
+            . "      - " . HUB_RUNTIME_SETTINGS_FILENAME . "\n"
+            . "    environment:\n"
+            . "      IMAGE_TOOLS_ROLE: \"{$role}\"\n";
+        if ($worker) {
+            $compose .= '      NVIDIA_VISIBLE_DEVICES: "${GPU_VISIBLE_DEVICES:-all}"' . "\n"
+                . '      NVIDIA_DRIVER_CAPABILITIES: "compute,utility"' . "\n"
+                . "    gpus: all\n";
+        } else {
+            $compose .= '      IMAGE_TOOLS_UPSCALE_WORKER_URL: "http://' . $selector . '-upscale:' . $internalPort . '"' . "\n"
+                . '      IMAGE_TOOLS_COLORIZE_WORKER_URL: "http://' . $selector . '-colorize:' . $internalPort . '"' . "\n"
+                . '    ports:' . "\n"
+                . '      - "127.0.0.1:${' . $portEnv . ':-' . $localPort . '}:' . $internalPort . '"' . "\n";
+        }
+        $compose .= "    restart: unless-stopped\n";
+        if ($volumes) {
+            $compose .= "    volumes:\n";
+            foreach ($volumes as $volume) {
+                $compose .= '      - ' . json_encode($volume, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_THROW_ON_ERROR) . "\n";
+            }
+        }
+
+        return $compose;
+    };
+
+    if ($resident) {
+        return "services:\n"
+            . $service($selector, 'api')
+            . $service($selector . '-upscale', 'upscale', true)
+            . $service($selector . '-colorize', 'colorize', true);
+    }
+
+    $compose = "services:\n"
+        . "  {$selector}:\n"
+        . "    image: {$imageTag}\n"
+        . "    build:\n"
+        . "      context: {$pack['dir']}/service\n"
+        . "    container_name: 3waaihub-{$serviceKey}\n"
+        . "    env_file:\n"
+        . "      - " . HUB_RUNTIME_SETTINGS_FILENAME . "\n"
+        . "    ports:\n"
+        . '      - "127.0.0.1:${' . $portEnv . ':-' . $localPort . '}:' . $internalPort . '"' . "\n"
+        . "    restart: unless-stopped\n"
+        . "    environment:\n"
+        . "      IMAGE_TOOLS_EXECUTION_MODE: \"on_demand\"\n"
+        . "      IMAGE_TOOLS_ROLE: \"on_demand\"\n";
+    if ($gpu) {
+        $compose .= '      NVIDIA_VISIBLE_DEVICES: "${GPU_VISIBLE_DEVICES:-all}"' . "\n"
+            . '      NVIDIA_DRIVER_CAPABILITIES: "compute,utility"' . "\n"
+            . "    gpus: all\n";
+    }
     if ($volumes) {
         $compose .= "    volumes:\n";
         foreach ($volumes as $volume) {

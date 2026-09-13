@@ -866,7 +866,7 @@ hub_test('audio admission persists only declared scalar job inputs', function ()
             'text' => 'allowed manifest field',
         ]);
         $task = hub_get_task($db, (int)(hub_test_audio_payload($accepted)['task_id'] ?? 0));
-        hub_test_assert($accepted['status'] === 200 && ($task['input'] ?? null) === ['text' => 'allowed manifest field'] && empty($task['source_artifact_id']), 'text-only task input must contain only declared client fields and no source lineage');
+        hub_test_assert($accepted['status'] === 200 && ($task['input'] ?? null) === ['text' => 'allowed manifest field', 'generation_profile' => 'standard'] && empty($task['source_artifact_id']), 'text-only task input must contain only declared client fields and no source lineage');
 
         $withSource = hub_test_audio_request($db, 'voice_generate', (string)$token['plain_token'], [
             'source_artifact_id' => (string)$source['artifact_id'],
@@ -888,7 +888,7 @@ hub_test('text-only voice tasks retry without fabricating a source upload', func
     $retryId = hub_create_manual_retry($db, $taskId, ['member_id' => $memberId, 'token_id' => (int)$token['token_id']]);
     $retry = hub_get_task($db, $retryId);
     hub_test_assert($retryId !== $taskId && (int)($retry['retry_of_task_id'] ?? 0) === $taskId && empty($retry['source_artifact_id'])
-        && ($retry['input'] ?? null) === ['text' => 'retry this text'] && ($retry['status'] ?? '') === 'queued', 'text-only voice retry must preserve immutable input without requiring a fake source file');
+        && ($retry['input'] ?? null) === ['text' => 'retry this text', 'generation_profile' => 'standard'] && ($retry['status'] ?? '') === 'queued', 'text-only voice retry must preserve immutable input without requiring a fake source file');
 });
 
 hub_test('manifest async job declarations cannot permit reserved controls', function (): void {

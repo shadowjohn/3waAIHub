@@ -2,7 +2,7 @@
   "schema_version": "0.1",
   "id": "image-tools",
   "name": "影像工具",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "category": "vision",
   "type": "api_service",
   "execution_type": "sync_api",
@@ -140,7 +140,7 @@
         }
       },
       "runner": {
-        "image": "3waaihub/image-tools:0.1.1",
+        "image": "3waaihub/image-tools:0.1.2",
         "entrypoint": ["python3", "/app/jobs.py"],
         "args": ["--request", "/workspace/input/request.json", "--source", "/workspace/input/source", "--output-dir", "/workspace/output", "--backend", "cuda"],
         "output_dir": "output",
@@ -173,7 +173,7 @@
         }
       },
       "runner": {
-        "image": "3waaihub/image-tools:0.1.1",
+        "image": "3waaihub/image-tools:0.1.2",
         "entrypoint": ["python3", "/app/jobs.py"],
         "args": ["--request", "/workspace/input/request.json", "--source", "/workspace/input/source", "--output-dir", "/workspace/output", "--backend", "cpu"],
         "output_dir": "output",
@@ -216,14 +216,20 @@
   "settings_schema": [
     {"key": "IMAGE_TOOLS_USE_GPU", "label": "Use GPU", "type": "boolean", "default": "1", "required": true, "restart_required": true},
     {"key": "IMAGE_TOOLS_DEFAULT_BACKEND", "label": "Default backend", "type": "select", "default": "auto", "options": ["auto", "cuda", "cpu"], "required": true, "restart_required": true},
-    {"key": "IMAGE_TOOLS_MAX_UPLOAD_MB", "label": "Max upload MB", "type": "integer", "default": "50", "min": 1, "max": 50, "required": true, "restart_required": true}
+    {"key": "IMAGE_TOOLS_MAX_UPLOAD_MB", "label": "Max upload MB", "type": "integer", "default": "50", "min": 1, "max": 50, "required": true, "restart_required": true},
+    {"key": "IMAGE_TOOLS_EXECUTION_MODE", "label": "Execution mode", "type": "select", "default": "resident_dual", "options": ["resident_dual", "on_demand"], "required": true, "restart_required": true},
+    {"key": "IMAGE_TOOLS_UPSCALE_RESIDENT_VRAM_MB", "label": "Upscale resident VRAM MB", "type": "integer", "default": "3072", "min": 0, "required": true, "restart_required": true},
+    {"key": "IMAGE_TOOLS_COLORIZE_RESIDENT_VRAM_MB", "label": "Colorize resident VRAM MB", "type": "integer", "default": "1024", "min": 0, "required": true, "restart_required": true}
   ],
   "env": [
     {"name": "IMAGE_TOOLS_USE_GPU", "default": "1", "required": true},
     {"name": "IMAGE_TOOLS_DEFAULT_BACKEND", "default": "auto", "required": true},
     {"name": "IMAGE_TOOLS_MODEL_DIR", "default": "/models/image-tools/realesrgan", "required": true},
     {"name": "IMAGE_TOOLS_COLORIZE_MODEL_DIR", "default": "/models/image-tools/ddcolor", "required": true},
-    {"name": "IMAGE_TOOLS_MAX_UPLOAD_MB", "default": "50", "required": true}
+    {"name": "IMAGE_TOOLS_MAX_UPLOAD_MB", "default": "50", "required": true},
+    {"name": "IMAGE_TOOLS_EXECUTION_MODE", "default": "resident_dual", "required": true},
+    {"name": "IMAGE_TOOLS_UPSCALE_RESIDENT_VRAM_MB", "default": "3072", "required": true},
+    {"name": "IMAGE_TOOLS_COLORIZE_RESIDENT_VRAM_MB", "default": "1024", "required": true}
   ],
   "preflight": {
     "checks": ["docker", "docker_compose", "storage"]

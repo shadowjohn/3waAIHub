@@ -98,6 +98,201 @@ hub_test('image-tools allows enough time for a first image build', function (): 
     hub_test_assert(hub_service_build_timeout_sec($service) === 1800, 'image-tools first build must allow time for its CUDA dependencies and image export');
 });
 
+hub_test('image-tools resident budget validates settings before summing reservations', function (): void {
+    hub_test_assert(function_exists('hub_image_tools_resident_vram_budget'), 'resident VRAM budget helper must exist');
+    $db = hub_test_reset_db();
+    $service = hub_test_image_tools_service($db);
+    $settings = hub_service_settings_values($db, $service);
+    hub_test_assert(hub_image_tools_resident_vram_budget($settings) === 4096, 'default reservation must be 3072 + 1024 MiB');
+    $settings['IMAGE_TOOLS_UPSCALE_RESIDENT_VRAM_MB'] = '2048';
+    $settings['IMAGE_TOOLS_COLORIZE_RESIDENT_VRAM_MB'] = '512';
+    hub_test_assert(hub_image_tools_resident_vram_budget($settings) === 2560, 'custom valid reservations must change the total');
+    foreach (['', '-1', 'abc', '1.5', null] as $invalid) {
+        $bad = $settings;
+        $bad['IMAGE_TOOLS_COLORIZE_RESIDENT_VRAM_MB'] = $invalid;
+        if ($invalid === null) {
+            unset($bad['IMAGE_TOOLS_COLORIZE_RESIDENT_VRAM_MB']);
+        }
+        try {
+            hub_image_tools_resident_vram_budget($bad);
+            throw new RuntimeException('invalid or missing resident reservation must fail closed');
+        } catch (InvalidArgumentException $error) {
+            hub_test_assert(str_contains($error->getMessage(), 'IMAGE_TOOLS_COLORIZE_RESIDENT_VRAM_MB'), 'existing settings validation must identify the invalid key');
+        }
+    }
+});
+
+hub_test('image-tools resident admission honors margin, sanitized occupants, probe failures and skips', function (): void {
+    hub_test_assert(function_exists('hub_image_tools_resident_start_preflight'), 'resident start preflight helper must exist');
+    $db = hub_test_reset_db();
+    $service = hub_test_image_tools_service($db);
+    hub_set_storage_setting($db, 'AIHUB_GPU_VRAM_SAFETY_MARGIN_MB', '256');
+    $details = [
+        ['pid' => 42, 'process_name' => 'python', 'used_vram_mb' => 1024, 'classification' => 'managed_service', 'secret' => 'private'],
+        ['pid' => 43, 'process_name' => "bad\nname", 'used_vram_mb' => 512],
+    ];
+    $result = hub_image_tools_resident_start_preflight($db, $service, static fn (): array => [
+        'free_vram_mb' => 4096, 'processes' => [42, 43], 'process_details' => $details,
+    ]);
+    hub_test_assert($result['ok'] === false && $result['reason'] === 'resident_vram_insufficient', 'bare reservation must fail with a positive margin regardless of other occupants');
+    hub_test_assert($result['required_vram_mb'] === 4096 && $result['free_vram_mb'] === 4096 && $result['safety_margin_mb'] === 256, 'failure must expose reservation, free VRAM and safety margin');
+    hub_test_assert($result['gpu_processes'] === [array_diff_key($details[0], ['secret' => true])], 'resident diagnostics must reuse process sanitization');
+    $ready = hub_image_tools_resident_start_preflight($db, $service, static fn (): array => ['free_vram_mb' => 4352]);
+    hub_test_assert($ready['ok'] === true && empty($ready['skipped']), 'reservation plus margin must admit the start');
+    $failed = hub_image_tools_resident_start_preflight($db, $service, static fn (): array => ['free_vram_mb' => 9000, 'probe_error' => 'gpu_probe_failed']);
+    hub_test_assert($failed['ok'] === false, 'a failed fresh probe must not admit a start');
+    $noProbe = static function (): array { throw new RuntimeException('skipped resident admission must not probe the GPU'); };
+    foreach ([['IMAGE_TOOLS_EXECUTION_MODE' => 'on_demand'], ['IMAGE_TOOLS_EXECUTION_MODE' => 'resident_dual', 'IMAGE_TOOLS_USE_GPU' => '0']] as $values) {
+        hub_update_service_settings($db, (int)$service['id'], $values);
+        $skip = hub_image_tools_resident_start_preflight($db, $service, $noProbe);
+        hub_test_assert($skip['ok'] === true && $skip['skipped'] === true, 'on-demand and GPU-disabled starts must skip admission');
+    }
+    $skip = hub_image_tools_resident_start_preflight($db, ['pack_id' => 'hello'], $noProbe);
+    hub_test_assert($skip['ok'] === true && $skip['skipped'] === true, 'generic services must skip admission');
+});
+
+function hub_test_image_tools_start_fixture(callable $callback): void
+{
+    if (hub_platform_id() === 'windows') {
+        hub_test_skip('Direct Linux Docker lifecycle is unavailable on Windows control-plane hosts.');
+    }
+    hub_test_with_image_tools_runtime_ready(static function () use ($callback): void {
+        $db = hub_test_reset_db();
+        $service = hub_install_pack($db, 'image-tools', [
+            'service_key' => 'image-tools-main', 'port_mode' => 'manual', 'local_port' => hub_allocate_local_port($db),
+        ])['service'];
+        hub_set_storage_setting($db, 'AIHUB_GPU_VRAM_SAFETY_MARGIN_MB', '256');
+        $dir = sys_get_temp_dir() . '/3waaihub_image_tools_start_' . bin2hex(random_bytes(8));
+        mkdir($dir, 0700);
+        file_put_contents($dir . '/docker', <<<'SH'
+#!/bin/sh
+printf '%s\n' "$*" >> "$MOCK_DOCKER_LOG"
+case " $* " in
+  *" up -d "*) touch "$MOCK_DOCKER_STATE" ;;
+  *" ps "*) test ! -f "$MOCK_DOCKER_STATE" || echo "running" ;;
+esac
+exit 0
+SH
+        );
+        chmod($dir . '/docker', 0755);
+        $saved = [];
+        foreach (['AIHUB_TEST_DOCKER_BIN' => $dir . '/docker', 'MOCK_DOCKER_LOG' => $dir . '/commands', 'MOCK_DOCKER_STATE' => $dir . '/running'] as $key => $value) {
+            $saved[$key] = getenv($key);
+            putenv($key . '=' . $value);
+        }
+        try {
+            $callback($db, $service, $dir);
+        } finally {
+            foreach ($saved as $key => $value) {
+                putenv($value === false ? $key : $key . '=' . $value);
+            }
+            foreach (['docker', 'commands', 'running'] as $file) {
+                @unlink($dir . '/' . $file);
+            }
+            @rmdir($dir);
+        }
+    });
+}
+
+hub_test('image-tools insufficient resident start stops before image build or Compose up', function (): void {
+    hub_test_image_tools_start_fixture(static function (PDO $db, array $service, string $dir): void {
+        $other = hub_get_service_by_key($db, 'hello-main');
+        hub_set_service_enabled($db, (string)$other['mode'], true);
+        hub_update_service_status($db, (int)$other['id'], 'running');
+        $before = hub_get_service($db, (int)$other['id']);
+        $result = hub_start_service_with_job($db, $service, null, static fn (): array => ['free_vram_mb' => 1000]);
+        hub_test_assert($result['exit_code'] !== 0 && ($result['reason'] ?? '') === 'resident_vram_insufficient', 'shared start boundary must refuse insufficient resident VRAM');
+        hub_test_assert($result['required_vram_mb'] === 4096 && $result['free_vram_mb'] === 1000 && $result['safety_margin_mb'] === 256, 'start result must retain budget facts');
+        $commands = (string)file_get_contents($dir . '/commands');
+        hub_test_assert(!str_contains($commands, 'image inspect') && !str_contains($commands, ' build') && !str_contains($commands, ' up -d'), 'admission must precede image inspection, build and Compose up');
+        hub_test_assert(!str_contains($commands, ' down') && !str_contains($commands, ' stop') && !str_contains($commands, ' kill'), 'admission must not evict any residents');
+        $after = hub_get_service($db, (int)$service['id']);
+        hub_test_assert((int)$after['enabled'] === 0 && $after['runtime_status'] === 'stopped' && $after['status'] === 'stopped', 'rejected service must remain disabled and stopped');
+        hub_test_assert(hub_get_service($db, (int)$other['id']) === $before, 'other services must remain untouched');
+        $logs = array_values(array_filter(hub_list_service_logs($db, (int)$service['id']), static fn (array $row): bool => $row['action'] === 'start'));
+        hub_test_assert(count($logs) === 1 && str_contains($logs[0]['output'], 'resident_vram_insufficient') && strlen($logs[0]['output']) < 16384, 'rejection must produce one bounded start log');
+    });
+});
+
+hub_test('image-tools resident start enables only after aggregate ingress readiness', function (): void {
+    hub_test_image_tools_start_fixture(static function (PDO $db, array $service, string $dir): void {
+        $probes = 0;
+        $gpuProbes = 0;
+        $healthProbe = static function (array $services) use ($db, $service, &$probes): array {
+            hub_test_assert((int)hub_get_service($db, (int)$service['id'])['enabled'] === 0, 'resident must stay disabled during preload');
+            hub_test_assert($services[0]['health_url'] === $service['health_url'], 'startup must probe the existing loopback ingress URL');
+            $ready = ++$probes > 1;
+            return [(int)$service['id'] => ['status' => 200, 'curl_result' => CURLE_OK, 'body' => json_encode([
+                'ok' => true, 'ready' => $ready, 'workers' => ['upscale' => ['ready' => true], 'colorize' => ['ready' => $ready]],
+            ])]];
+        };
+        $gpuProbe = static function () use (&$gpuProbes): array { $gpuProbes++; return ['free_vram_mb' => 4352]; };
+        $result = hub_start_service_with_job($db, $service, null, $gpuProbe, $healthProbe, 3);
+        hub_test_assert($result['exit_code'] === 0 && $probes === 2 && $gpuProbes === 1, 'fresh admission and aggregate readiness must precede success');
+        $after = hub_get_service($db, (int)$service['id']);
+        hub_test_assert((int)$after['enabled'] === 1 && $after['runtime_status'] === 'running', 'ready resident must be enabled and running');
+        hub_test_assert(str_contains((string)file_get_contents($dir . '/commands'), ' up -d'), 'sufficient admission must reach normal Compose start');
+    });
+});
+
+hub_test('image-tools repeated resident start preserves running state without another admission', function (): void {
+    hub_test_image_tools_start_fixture(static function (PDO $db, array $service, string $dir): void {
+        file_put_contents($dir . '/running', 'running');
+        $gpuProbes = 0;
+        $gpuProbe = static function () use (&$gpuProbes): array {
+            $gpuProbes++;
+            return ['free_vram_mb' => 1000];
+        };
+        $healthProbe = static function (): array { throw new RuntimeException('already-running refusal must not recheck preload'); };
+        foreach ([true, false] as $enabled) {
+            hub_set_service_enabled($db, (string)$service['mode'], $enabled);
+            hub_update_service_status($db, (int)$service['id'], $enabled ? 'running' : 'error');
+            $result = hub_start_service_with_job($db, $service, null, $gpuProbe, $healthProbe, 0);
+            hub_test_assert($result['exit_code'] !== 0 && ($result['reason'] ?? '') === 'service_already_running', 'running project must receive an explicit already-running refusal, including after failed preload');
+            $after = hub_get_service($db, (int)$service['id']);
+            hub_test_assert((int)$after['enabled'] === (int)$enabled && $after['runtime_status'] === 'running' && $after['status'] === 'running', 'refusal must preserve enabled state and the actual running status, never mark a live project stopped');
+        }
+        $commands = (string)file_get_contents($dir . '/commands');
+        hub_test_assert($gpuProbes === 0, 'existing resident occupancy must not trigger a second GPU capacity probe');
+        hub_test_assert(!str_contains($commands, 'image inspect') && !str_contains($commands, ' build') && !str_contains($commands, ' up -d'), 'repeated Start must not inspect/build/recreate the running project');
+    });
+});
+
+hub_test('image-tools failed or timed-out resident health cannot report successful start', function (): void {
+    hub_test_image_tools_start_fixture(static function (PDO $db, array $service, string $dir): void {
+        foreach ([
+            ['status' => 200, 'curl_result' => CURLE_OK, 'body' => '{"ok":true,"ready":false,"workers":{"colorize":{"ready":false}}}'],
+            ['status' => 0, 'curl_result' => CURLE_OPERATION_TIMEDOUT, 'body' => ''],
+            ['status' => 500, 'curl_result' => CURLE_OK, 'body' => '{"ok":true,"ready":true}'],
+            ['status' => 200, 'curl_result' => CURLE_OK, 'body' => '{"ok":true}'],
+            ['status' => 200, 'curl_result' => CURLE_OK, 'body' => '{"ok":true,"ready":true}'],
+            ['status' => 200, 'curl_result' => CURLE_OK, 'body' => '{"ok":true,"ready":true,"workers":{"upscale":{"ready":true},"colorize":{"ready":false}}}'],
+        ] as $probe) {
+            @unlink($dir . '/running');
+            hub_update_service_status($db, (int)$service['id'], 'stopped');
+            $result = hub_start_service_with_job($db, $service, null, static fn (): array => ['free_vram_mb' => 4352], static fn (): array => [(int)$service['id'] => $probe], 0);
+            hub_test_assert($result['exit_code'] !== 0 && ($result['reason'] ?? '') === 'runtime_not_ready', 'failed, incomplete or timed-out preload must return a non-zero start result');
+            $after = hub_get_service($db, (int)$service['id']);
+            hub_test_assert((int)$after['enabled'] === 0 && $after['runtime_status'] === 'error', 'partial resident must remain disabled with visible error status');
+            hub_test_assert(str_contains(hub_list_service_logs($db, (int)$service['id'])[0]['output'], 'runtime_not_ready'), 'preload failure must remain visible in service logs');
+        }
+    });
+});
+
+hub_test('image-tools on-demand and CPU starts preserve generic Compose lifecycle', function (): void {
+    hub_test_image_tools_start_fixture(static function (PDO $db, array $service): void {
+        $unexpected = static function (): array { throw new RuntimeException('non-resident starts must skip GPU and resident health probes'); };
+        foreach ([['IMAGE_TOOLS_EXECUTION_MODE' => 'on_demand'], ['IMAGE_TOOLS_EXECUTION_MODE' => 'resident_dual', 'IMAGE_TOOLS_USE_GPU' => '0']] as $values) {
+            hub_update_service_settings($db, (int)$service['id'], $values);
+            $result = hub_start_service_with_job($db, $service, null, $unexpected, $unexpected, 0);
+            hub_test_assert($result['exit_code'] === 0 && (int)hub_get_service($db, (int)$service['id'])['enabled'] === 1, 'non-resident configuration must retain normal start behavior: ' . json_encode($result));
+        }
+        $generic = hub_get_service_by_key($db, 'hello-main');
+        $result = hub_start_service_with_job($db, $generic, null, $unexpected, $unexpected, 0);
+        hub_test_assert($result['exit_code'] === 0, 'generic service starts must be unaffected');
+    });
+});
+
 hub_test('image-tools gateway injects query operations and stages Base64 without forwarding it', function (): void {
     $db = hub_test_reset_db();
     hub_test_image_tools_service($db);
@@ -670,7 +865,7 @@ hub_test('image-tools Pack declares the L5 generic image-tools contract', functi
     $readme = (string)file_get_contents(HUB_ROOT . '/README.md');
     preg_match('/### image-tools Runtime Level\\n\\n(.*?)(?=\\n### |\\z)/s', $readme, $runtimeSection);
     $runtimeSection = (string)($runtimeSection[1] ?? '');
-    $l4aCommand = 'docker compose -f data/services/image-tools-main/docker-compose.generated.yml exec -T image-tools python3 /app/model_smoke.py --backend cpu';
+    $l4aCommand = 'docker compose -f data/services/image-tools-main/docker-compose.generated.yml exec -T image-tools-upscale python3 /app/model_smoke.py --backend cuda';
     $l5CudaCommand = 'php scripts/benchmark.php --service=image-tools-main --case=image_tools_cuda_upscale_golden';
     $l5CpuCommand = 'php scripts/benchmark.php --service=image-tools-main --case=image_tools_cpu_upscale_golden';
     hub_test_assert(str_contains($runtimeSection, '影像工具'), 'README image-tools runtime row must use the generic Chinese Pack identity');
@@ -779,7 +974,7 @@ hub_test('image-tools Pack declares the L5 generic image-tools contract', functi
 
     hub_test_assert(($manifest['id'] ?? '') === 'image-tools', 'image-tools pack ID mismatch');
     hub_test_assert(($manifest['name'] ?? '') === '影像工具', 'image-tools display name must remain generic Chinese');
-    hub_test_assert(($manifest['version'] ?? '') === '0.1.1', 'image-tools colorize release must bump the patch version');
+    hub_test_assert(($manifest['version'] ?? '') === '0.1.2', 'image-tools resident worker release must bump the patch version');
     hub_test_assert(($manifest['description'] ?? '') === '本機複合式影像處理工具；提供 Real-ESRGAN 圖片放大與 DDColor 黑白變彩色。', 'image-tools description must describe the extensible Chinese image-tools Pack');
     hub_test_assert(($manifest['execution_type'] ?? '') === 'sync_api', 'image-tools must expose a sync API');
     hub_test_assert(($manifest['runtime_level'] ?? '') === 'L5-benchmark-ready' && ($manifest['runtime_ready'] ?? false) === true, 'image-tools must publish L5 only after final L4b/L5 evidence exists');
@@ -892,6 +1087,9 @@ hub_test('image-tools Pack declares the L5 generic image-tools contract', functi
         ['key' => 'IMAGE_TOOLS_USE_GPU', 'label' => 'Use GPU', 'type' => 'boolean', 'default' => '1', 'required' => true, 'restart_required' => true],
         ['key' => 'IMAGE_TOOLS_DEFAULT_BACKEND', 'label' => 'Default backend', 'type' => 'select', 'default' => 'auto', 'options' => ['auto', 'cuda', 'cpu'], 'required' => true, 'restart_required' => true],
         ['key' => 'IMAGE_TOOLS_MAX_UPLOAD_MB', 'label' => 'Max upload MB', 'type' => 'integer', 'default' => '50', 'min' => 1, 'max' => 50, 'required' => true, 'restart_required' => true],
+        ['key' => 'IMAGE_TOOLS_EXECUTION_MODE', 'label' => 'Execution mode', 'type' => 'select', 'default' => 'resident_dual', 'options' => ['resident_dual', 'on_demand'], 'required' => true, 'restart_required' => true],
+        ['key' => 'IMAGE_TOOLS_UPSCALE_RESIDENT_VRAM_MB', 'label' => 'Upscale resident VRAM MB', 'type' => 'integer', 'default' => '3072', 'min' => 0, 'required' => true, 'restart_required' => true],
+        ['key' => 'IMAGE_TOOLS_COLORIZE_RESIDENT_VRAM_MB', 'label' => 'Colorize resident VRAM MB', 'type' => 'integer', 'default' => '1024', 'min' => 0, 'required' => true, 'restart_required' => true],
     ], 'image-tools install settings mismatch');
     hub_test_assert(($manifest['env'] ?? []) === [
         ['name' => 'IMAGE_TOOLS_USE_GPU', 'default' => '1', 'required' => true],
@@ -899,7 +1097,14 @@ hub_test('image-tools Pack declares the L5 generic image-tools contract', functi
         ['name' => 'IMAGE_TOOLS_MODEL_DIR', 'default' => '/models/image-tools/realesrgan', 'required' => true],
         ['name' => 'IMAGE_TOOLS_COLORIZE_MODEL_DIR', 'default' => '/models/image-tools/ddcolor', 'required' => true],
         ['name' => 'IMAGE_TOOLS_MAX_UPLOAD_MB', 'default' => '50', 'required' => true],
+        ['name' => 'IMAGE_TOOLS_EXECUTION_MODE', 'default' => 'resident_dual', 'required' => true],
+        ['name' => 'IMAGE_TOOLS_UPSCALE_RESIDENT_VRAM_MB', 'default' => '3072', 'required' => true],
+        ['name' => 'IMAGE_TOOLS_COLORIZE_RESIDENT_VRAM_MB', 'default' => '1024', 'required' => true],
     ], 'image-tools runtime environment mismatch');
+    hub_test_assert(($manifest['version'] ?? '') === '0.1.2', 'image-tools Pack version mismatch');
+    foreach ($jobs as $job) {
+        hub_test_assert(($job['runner']['image'] ?? '') === '3waaihub/image-tools:0.1.2', 'image-tools async runner must use the Pack image tag');
+    }
     hub_test_assert(($manifest['service']['local_port_env'] ?? '') === 'IMAGE_TOOLS_PORT', 'image-tools port environment mismatch');
 
     $catalog = json_decode((string)file_get_contents(HUB_ROOT . '/packs/catalog.json'), true, 512, JSON_THROW_ON_ERROR);
@@ -913,9 +1118,18 @@ hub_test('image-tools Pack declares the L5 generic image-tools contract', functi
     hub_test_assert($catalogEntry !== null, 'image-tools catalog entry missing');
 });
 
-hub_test('image-tools checked-in Compose requests all GPUs', function (): void {
+hub_test('image-tools resident Compose topology keeps workers internal', function (): void {
     $compose = (string)file_get_contents(HUB_ROOT . '/packs/image-tools/docker-compose.yml');
-    hub_test_assert(str_contains($compose, 'gpus: all'), 'image-tools checked-in Compose must request all GPUs');
+    hub_test_assert(substr_count($compose, '127.0.0.1:${IMAGE_TOOLS_PORT:-18113}:8000') === 1, 'checked-in resident Compose must publish only the ingress loopback port');
+    foreach (['  image-tools:', '  image-tools-upscale:', '  image-tools-colorize:'] as $service) {
+        hub_test_assert(str_contains($compose, "services:\n{$service}\n") || str_contains($compose, "\n{$service}\n"), "checked-in resident Compose must define {$service}");
+    }
+    hub_test_assert(substr_count($compose, 'gpus: all') === 2, 'checked-in resident Compose must grant GPUs only to both workers');
+    hub_test_assert(substr_count($compose, 'IMAGE_TOOLS_ROLE:') === 3, 'checked-in resident Compose must declare ingress and worker roles');
+    $apiCompose = explode("  image-tools-upscale:\n", $compose, 2)[0];
+    hub_test_assert(str_contains($apiCompose, '/models/image-tools/realesrgan:ro') && str_contains($apiCompose, '/models/image-tools/ddcolor:ro'), 'checked-in resident ingress must mount both model roots read-only for explicit CPU requests');
+    hub_test_assert(!str_contains($apiCompose, 'gpus: all'), 'checked-in resident ingress must not gain GPU access for CPU requests');
+    hub_test_assert(substr_count($compose, '/models/image-tools/realesrgan:ro') === 3 && substr_count($compose, '/models/image-tools/ddcolor:ro') === 3, 'checked-in resident ingress and workers must mount both model roots read-only');
 });
 
 hub_test('image-tools public mode permits internal hyphens only', function (): void {
@@ -934,7 +1148,7 @@ hub_test('image-tools public mode permits internal hyphens only', function (): v
     ]);
     hub_test_assert(($installed['service']['mode'] ?? '') === 'image-tools', 'image-tools install must retain its default public mode');
     $compose = (string)file_get_contents(hub_path((string)$installed['service']['compose_file']));
-    hub_test_assert(str_contains($compose, 'gpus: all'), 'image-tools generated Compose must request all GPUs by default');
+    hub_test_assert(substr_count($compose, 'gpus: all') === 2, 'image-tools generated Compose must grant GPUs only to resident workers by default');
 
     $cpuInstalled = hub_install_pack($db, 'image-tools', [
         'service_key' => 'image-tools-cpu',
@@ -944,7 +1158,7 @@ hub_test('image-tools public mode permits internal hyphens only', function (): v
         'env' => ['IMAGE_TOOLS_USE_GPU' => '0'],
     ]);
     $cpuCompose = (string)file_get_contents(hub_path((string)$cpuInstalled['service']['compose_file']));
-    hub_test_assert(!str_contains($cpuCompose, 'gpus: all'), 'image-tools generated Compose must omit GPUs when explicitly disabled');
+    hub_test_assert(!str_contains($cpuCompose, 'gpus: all') && !str_contains($cpuCompose, 'image-tools-upscale:'), 'image-tools generated Compose must retain only the on-demand service when GPU is disabled');
 
     foreach (['-image-tools', 'image/tools', 'image.tools', "image\ntools", "\nimage-tools", "image-tools\n", "\0image-tools"] as $invalidMode) {
         $invalidManifest = $pack['manifest'];
@@ -969,7 +1183,14 @@ hub_test('image-tools public mode permits internal hyphens only', function (): v
     $mainCompose = (string)file_get_contents(hub_path((string)$mainInstalled['service']['compose_file']));
     hub_test_assert(str_contains($mainCompose, "services:\n  image-tools:\n"), 'image-tools-main generated Compose must expose the stable image-tools service selector');
     hub_test_assert(!str_contains($mainCompose, "services:\n  image-tools-main:\n"), 'image-tools-main generated Compose must not leak its instance key into the operator service selector');
+    hub_test_assert(str_contains($mainCompose, "  image-tools-upscale:\n") && str_contains($mainCompose, "  image-tools-colorize:\n"), 'image-tools-main resident Compose must create both internal workers');
+    hub_test_assert(substr_count($mainCompose, '127.0.0.1:${IMAGE_TOOLS_PORT:-18113}:8000') === 1, 'image-tools-main resident Compose must publish only its ingress loopback port');
+    hub_test_assert(substr_count($mainCompose, 'gpus: all') === 2, 'image-tools-main resident Compose must grant GPUs only to workers');
+    hub_test_assert(substr_count($mainCompose, 'IMAGE_TOOLS_ROLE:') === 3 && str_contains($mainCompose, 'IMAGE_TOOLS_UPSCALE_WORKER_URL: "http://image-tools-upscale:8000"') && str_contains($mainCompose, 'IMAGE_TOOLS_COLORIZE_WORKER_URL: "http://image-tools-colorize:8000"'), 'image-tools-main ingress must target both internal workers');
     $modelsRoot = (string)(hub_get_storage_paths($mainDb)['AIHUB_MODELS_DIR'] ?? '');
+    $mainApiCompose = explode("  image-tools-upscale:\n", $mainCompose, 2)[0];
+    hub_test_assert(str_contains($mainApiCompose, '"' . $modelsRoot . '/image-tools/realesrgan:/models/image-tools/realesrgan:ro"') && str_contains($mainApiCompose, '"' . $modelsRoot . '/image-tools/ddcolor:/models/image-tools/ddcolor:ro"'), 'generated resident ingress must mount both managed model roots read-only for explicit CPU requests');
+    hub_test_assert(!str_contains($mainApiCompose, 'gpus: all'), 'generated resident ingress must not gain GPU access for CPU requests');
     hub_test_assert(str_contains($mainCompose, '"' . $modelsRoot . '/image-tools/realesrgan:/models/image-tools/realesrgan:ro"'), 'image-tools-main generated Compose must embed its managed model mount for the standalone L4a smoke command');
     hub_test_assert(str_contains($mainCompose, '"' . $modelsRoot . '/image-tools/ddcolor:/models/image-tools/ddcolor:ro"'), 'image-tools-main generated Compose must embed its managed DDColor model mount');
     hub_test_assert(!str_contains($mainCompose, '${AIHUB_MODELS_DIR}'), 'image-tools-main generated Compose must not require a shell model-root variable for the standalone L4a smoke command');
@@ -984,13 +1205,60 @@ hub_test('image-tools public mode permits internal hyphens only', function (): v
         hub_test_assert($mainService !== null, 'image-tools-main service must remain available for Compose regeneration');
         hub_write_service_compose($mainDb, $mainService);
         $regeneratedCompose = (string)file_get_contents(hub_path((string)$mainService['compose_file']));
-        hub_test_assert(str_contains($regeneratedCompose, '"' . $customModelsRoot . '/image-tools/realesrgan:/models/image-tools/realesrgan:ro"'), 'image-tools-main regenerated Compose must embed the current custom models root');
-        hub_test_assert(str_contains($regeneratedCompose, '"' . $customModelsRoot . '/image-tools/ddcolor:/models/image-tools/ddcolor:ro"'), 'image-tools-main regenerated Compose must embed the current custom DDColor root');
+        hub_test_assert(substr_count($regeneratedCompose, '"' . $customModelsRoot . '/image-tools/realesrgan:/models/image-tools/realesrgan:ro"') === 3, 'resident ingress and workers must use the current custom Real-ESRGAN model root');
+        hub_test_assert(substr_count($regeneratedCompose, '"' . $customModelsRoot . '/image-tools/ddcolor:/models/image-tools/ddcolor:ro"') === 3, 'resident ingress and workers must use the current custom DDColor root');
         hub_test_assert(!str_contains($regeneratedCompose, '${AIHUB_MODELS_DIR}'), 'image-tools-main regenerated Compose must not require a shell model-root variable');
     } finally {
         if (is_dir($customModelsRoot) && !is_link($customModelsRoot) && !rmdir($customModelsRoot)) {
             throw new RuntimeException('Cannot remove image-tools custom models root.');
         }
+    }
+
+    $onDemandInstalled = hub_install_pack(hub_test_reset_db(), 'image-tools', [
+        'service_key' => 'image-tools-on-demand',
+        'port_mode' => 'manual',
+        'local_port' => 18115,
+        'env' => ['IMAGE_TOOLS_EXECUTION_MODE' => 'on_demand'],
+    ]);
+    $onDemandCompose = (string)file_get_contents(hub_path((string)$onDemandInstalled['service']['compose_file']));
+    hub_test_assert(!str_contains($onDemandCompose, 'image-tools-upscale:') && !str_contains($onDemandCompose, 'image-tools-colorize:'), 'on-demand mode must not emit unused resident workers');
+});
+
+hub_test('image-tools generated topology selects a matching Python runtime role', function (): void {
+    $pack = hub_get_pack('image-tools');
+    $defaults = array_column($pack['manifest']['env'], 'default', 'name');
+    $script = <<<'PY'
+import ast
+import json
+import os
+import sys
+from pathlib import Path
+
+# Exercise the actual role selector without importing the GPU/model dependencies.
+tree = ast.parse(Path(sys.argv[1]).read_text())
+tree.body = [node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name == "runtime_role"]
+exec(compile(tree, sys.argv[1], "exec"))
+os.environ.clear()
+os.environ.update(json.loads(sys.argv[2]))
+print(runtime_role())
+PY;
+    foreach ([[[], 'api', 3], [['IMAGE_TOOLS_USE_GPU' => '0'], 'on_demand', 1], [['IMAGE_TOOLS_EXECUTION_MODE' => 'on_demand'], 'on_demand', 1]] as [$settings, $role, $containers]) {
+        $env = array_replace($defaults, $settings);
+        $compose = hub_generate_pack_compose($pack, 'image-tools-main', 18113, $env);
+        hub_test_assert(substr_count($compose, 'container_name:') === $containers, 'generated topology must match the selected execution path');
+        $ingress = explode("  image-tools-upscale:\n", $compose, 2)[0];
+        preg_match_all('/^      (IMAGE_TOOLS_(?:EXECUTION_MODE|ROLE)): "([^"]+)"$/m', $ingress, $overrides, PREG_SET_ORDER);
+        foreach ($overrides as $override) {
+            $env[$override[1]] = $override[2];
+        }
+        $process = proc_open(['python3', '-c', $script, $pack['dir'] . '/service/app.py', json_encode($env, JSON_THROW_ON_ERROR)], [1 => ['pipe', 'w'], 2 => ['pipe', 'w']], $pipes);
+        hub_test_assert(is_resource($process), 'runtime role test process must start');
+        $stdout = stream_get_contents($pipes[1]);
+        $stderr = stream_get_contents($pipes[2]);
+        fclose($pipes[1]);
+        fclose($pipes[2]);
+        $exitCode = proc_close($process);
+        hub_test_assert($exitCode === 0 && trim($stdout) === $role, 'generated environment must select Python runtime role ' . $role . ': ' . $stdout . $stderr);
     }
 });
 
@@ -1050,6 +1318,14 @@ hub_test('image-tools publishes bounded Playground and documentation contracts',
         && str_contains($readme, 'file_required, source_ambiguous, invalid_base64'), 'README must publish image-tools source, async, format, and error guidance');
     hub_test_assert(is_file($runbook), 'image-tools operation runbook must exist');
     $runbookText = (string)file_get_contents($runbook);
+    hub_test_assert(preg_match('/若需 rollback.*?先.*?Stop `image-tools-main`.*?再.*?IMAGE_TOOLS_EXECUTION_MODE=on_demand.*?最後.*?Start `image-tools-main`/s', $runbookText) === 1, 'rollback must stop the old resident project before saving on-demand settings and starting it');
+    hub_test_assert(str_contains($runbookText, '3waaihub-image-tools-main:' . $pack['manifest']['version']), 'provisioning command must use the current generated image tag');
+    foreach (['resident_dual', 'on_demand', '3072 MiB', '1024 MiB', '4096 MiB', 'safety margin', 'ingress /health', 'worker health', 'resident_vram_insufficient', 'image-tools', 'image-tools-upscale', 'image-tools-colorize', 'evidence 不記錄 image、Token、Base64 或 private path'] as $needle) {
+        hub_test_assert(str_contains($readme . "\n" . $runbookText, $needle), 'image-tools resident documentation is missing ' . $needle);
+    }
+    hub_test_assert(str_contains($readme, 'exec -T image-tools-upscale python3 /app/model_smoke.py --backend cuda')
+        && str_contains($runbookText, 'exec -T image-tools-upscale python3 /app/model_smoke.py --backend cuda')
+        && !str_contains($readme . "\n" . $runbookText, 'exec -T image-tools python3 /app/model_smoke.py'), 'resident CUDA smoke documentation must use only the internal upscale worker selector');
     foreach (['ready.json', 'SHA-256', 'Docker', 'CUDA', 'GPU-first', 'CPU', 'upscale_task', 'colorize', 'DDColor', 'task_status', 'artifact', 'cancellation', 'cleanup', 'rollback', 'retention', 'L4a-model-init-smoke'] as $needle) {
         hub_test_assert(str_contains($runbookText, $needle), 'image-tools runbook is missing ' . $needle);
     }

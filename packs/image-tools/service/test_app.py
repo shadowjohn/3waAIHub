@@ -13,6 +13,7 @@ import unittest
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import call, patch
+from contextlib import asynccontextmanager
 
 from PIL import Image
 import numpy as np
@@ -21,11 +22,13 @@ sys.path.insert(0, str(Path(__file__).parent))
 
 import model_runtime
 import colorize_runtime
+import image_contract
+import requests
 
 
 class _FastAPI:
     def __init__(self, *args, **kwargs) -> None:
-        pass
+        self.lifespan = kwargs.get("lifespan")
 
     def get(self, *args, **kwargs):
         return lambda function: function
@@ -137,7 +140,7 @@ class AppTest(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory()
         self.root = Path(self.temp.name) / "models"
         self.root.mkdir()
-        self.environment = patch.dict(os.environ, {"IMAGE_TOOLS_MODEL_DIR": str(self.root)}, clear=False)
+        self.environment = patch.dict(os.environ, {"IMAGE_TOOLS_MODEL_DIR": str(self.root), "IMAGE_TOOLS_ROLE": "on_demand", "IMAGE_TOOLS_EXECUTION_MODE": "on_demand"}, clear=False)
         self.environment.start()
         self._reset_upsampler_cache()
 
@@ -447,6 +450,218 @@ class AppTest(unittest.TestCase):
         self.assertNotIn("private", body)
         self.assertNotIn("/models/path", body)
         self.assertNotIn("RuntimeError", body)
+
+
+class ResidentAppTest(unittest.TestCase):
+    def setUp(self):
+        import app
+        self.app = app
+        self.env = patch.dict(os.environ, {
+            "IMAGE_TOOLS_EXECUTION_MODE": "resident_dual", "IMAGE_TOOLS_ROLE": "api",
+            "IMAGE_TOOLS_UPSCALE_WORKER_URL": "http://image-tools-upscale:8000",
+            "IMAGE_TOOLS_COLORIZE_WORKER_URL": "http://image-tools-colorize:8000",
+            "IMAGE_TOOLS_UPSCALE_RESIDENT_VRAM_MB": "3072",
+            "IMAGE_TOOLS_COLORIZE_RESIDENT_VRAM_MB": "1024",
+        })
+        self.env.start()
+        self.addCleanup(self.env.stop)
+
+    @asynccontextmanager
+    async def started(self):
+        self.assertIsNotNone(self.app.app.lifespan, "resident models must load during FastAPI lifespan startup")
+        async with self.app.app.lifespan(self.app.app):
+            yield
+
+    def request(self, operation="upscale", **kwargs):
+        return asyncio.run(self.app.process_image(FakeUpload(png_bytes()), operation=operation, **kwargs))
+
+    def worker_health(self, role, **extra):
+        return {"role": role, "ready": True,
+                "loaded_models": list(image_contract._MODELS) if role == "upscale" else ["ddcolor-modelscope"],
+                "resident_vram_mb": 3072 if role == "upscale" else 1024,
+                "torch_allocated_mb": 100.5, "torch_reserved_mb": 128.0, **extra}
+
+    def health_response(self, url, **kwargs):
+        role = "upscale" if "upscale" in url else "colorize"
+        return SimpleNamespace(status_code=200, json=lambda: self.worker_health(role))
+
+    def test_upscale_startup_loads_all_aliases_once_and_requests_keep_them(self):
+        async def scenario():
+            async with self.started():
+                for alias in ("realesrgan-x4plus", "realesr-animevideov3-x2"):
+                    response = await self.app.internal_process_image(FakeUpload(png_bytes()), operation="upscale", model=alias)
+                    self.assertEqual(200, response.status_code)
+                self.assertEqual(list(image_contract._MODELS), self.app.health()["loaded_models"])
+        with patch.dict(os.environ, {"IMAGE_TOOLS_ROLE": "upscale"}), patch.object(self.app, "cuda_available", return_value=True), patch.object(self.app, "verify_ready", return_value={}), patch.object(model_runtime, "build_upsampler", side_effect=lambda *args: FakeUpsampler()) as build, patch.object(self.app, "_release_model_caches") as release, patch.object(colorize_runtime, "build_colorizer") as color:
+            asyncio.run(scenario())
+        self.assertEqual([call(alias, "cuda", self.app.model_dir().resolve() / selection.filename) for alias, selection in image_contract._MODELS.items()], build.call_args_list)
+        release.assert_not_called()
+        color.assert_not_called()
+
+    def test_colorize_preloads_once_and_rejects_upscale_without_mutation(self):
+        async def scenario():
+            async with self.started():
+                for operation in ("colorize", "upscale", "colorize"):
+                    response = await self.app.internal_process_image(FakeUpload(png_bytes()), operation=operation)
+                    self.assertEqual(400 if operation == "upscale" else 200, response.status_code)
+                self.assertEqual(["ddcolor-modelscope"], self.app.health()["loaded_models"])
+        with patch.dict(os.environ, {"IMAGE_TOOLS_ROLE": "colorize"}), patch.object(self.app, "cuda_available", return_value=True), patch.object(colorize_runtime, "verify_ready", return_value={}), patch.object(colorize_runtime, "build_colorizer", return_value=object()) as build, patch.object(colorize_runtime, "colorize", side_effect=lambda _, source: source), patch.object(self.app, "_release_model_caches") as release, patch.object(model_runtime, "build_upsampler") as upscale:
+            asyncio.run(scenario())
+        build.assert_called_once_with("cuda", self.app.colorize_model_dir().resolve())
+        upscale.assert_not_called()
+        release.assert_not_called()
+
+    def test_ingress_routes_each_operation_and_preserves_worker_response(self):
+        for operation in ("upscale", "colorize"):
+            for status, content_type, body in ((200, "image/png", png_bytes()), (503, "application/json", b'{"ok":false,"error":"model_load_failed"}')):
+                headers = {"Content-Type": content_type, "X-3waAIHub-Model": "ddcolor-modelscope" if operation == "colorize" else "realesrgan-x4plus", "X-3waAIHub-Backend": "cuda", "X-3waAIHub-Elapsed-Ms": "17", "X-3waAIHub-Width": "2", "X-3waAIHub-Height": "3", "Server": "private-worker", "Location": "http://image-tools-upscale:8000"}
+                upstream = SimpleNamespace(status_code=status, content=body, headers=headers)
+                with self.subTest(operation=operation, status=status), patch("requests.get", side_effect=self.health_response) as get, patch("requests.post", return_value=upstream) as post, patch.object(self.app, "cuda_available", side_effect=AssertionError("ingress must not probe local GPU")), patch.object(model_runtime, "build_upsampler") as upscale, patch.object(colorize_runtime, "build_colorizer") as color:
+                    response = self.request(operation)
+                self.assertEqual(status, response.status_code)
+                self.assertEqual(body, response.body)
+                self.assertEqual({k.lower(): v for k, v in headers.items() if k not in {"Server", "Location"}}, {k.lower(): v for k, v in response.headers.items()})
+                self.assertEqual(f"http://image-tools-{operation}:8000/internal/process/image", post.call_args.args[0])
+                self.assertEqual(f"http://image-tools-{operation}:8000/internal/health", get.call_args.args[0])
+                self.assertEqual("cuda", post.call_args.kwargs["data"]["backend"])
+                self.assertEqual(png_bytes(), post.call_args.kwargs["files"]["image"][1])
+                self.assertFalse(post.call_args.kwargs["allow_redirects"])
+                upscale.assert_not_called()
+                color.assert_not_called()
+
+    def test_ingress_unavailable_worker_never_falls_back_to_cpu_or_cold_load(self):
+        for backend in ("auto", "cuda"):
+            with self.subTest(backend=backend), patch("requests.get", side_effect=requests.ConnectionError("private worker URL")), patch("requests.post") as post, patch.object(self.app, "_run") as run:
+                response = self.request(backend=backend)
+            self.assertEqual(503, response.status_code)
+            self.assertEqual({"ok": False, "error": "runtime_not_ready"}, json.loads(response.body))
+            post.assert_not_called()
+            run.assert_not_called()
+
+    def test_ingress_connection_loss_after_ready_maps_to_runtime_not_ready(self):
+        with patch("requests.get", side_effect=self.health_response), patch("requests.post", side_effect=requests.Timeout("private")), patch.object(self.app, "_run") as run:
+            response = self.request()
+        self.assertEqual(503, response.status_code)
+        self.assertEqual("runtime_not_ready", json.loads(response.body)["error"])
+        run.assert_not_called()
+
+    def test_ingress_cpu_uses_existing_cpu_path_without_worker_probes(self):
+        with patch("requests.get") as get, patch("requests.post") as post, patch.object(self.app, "_run", return_value=(png_bytes(), {"model": "realesrgan-x4plus", "backend": "cpu", "width": 2, "height": 3})) as run:
+            response = self.request(backend="cpu")
+        self.assertEqual(200, response.status_code)
+        run.assert_called_once_with(png_bytes(), model="realesrgan-x4plus", backend="cpu", outscale=4)
+        get.assert_not_called()
+        post.assert_not_called()
+
+    def test_ingress_cpu_operation_switches_only_release_ingress_caches(self):
+        self.app._UPSAMPLER_CACHE = None
+        self.app._COLORIZER_CACHE = None
+        resident_models = self.app._RESIDENT_UPSAMPLERS.copy()
+        resident_colorizer = self.app._RESIDENT_COLORIZER
+        with patch.object(self.app, "verify_ready", return_value={}), patch.object(model_runtime, "build_upsampler", side_effect=lambda *args: FakeUpsampler()) as upscale, patch.object(colorize_runtime, "build_colorizer", return_value=object()) as color, patch.object(colorize_runtime, "colorize", side_effect=lambda _, source: source), patch.object(self.app, "_release_model_caches", wraps=self.app._release_model_caches) as release, patch("requests.get") as get, patch("requests.post") as post:
+            for operation in ("upscale", "colorize", "upscale"):
+                self.assertEqual(200, self.request(operation, backend="cpu").status_code)
+        self.assertEqual(["cpu", "cpu"], [args.args[1] for args in upscale.call_args_list])
+        self.assertEqual("cpu", color.call_args.args[0])
+        self.assertEqual(3, release.call_count)
+        self.assertEqual(resident_models, self.app._RESIDENT_UPSAMPLERS)
+        self.assertIs(resident_colorizer, self.app._RESIDENT_COLORIZER)
+        get.assert_not_called()
+        post.assert_not_called()
+
+    def test_internal_endpoints_reject_ingress_and_on_demand_roles(self):
+        for mode, role in (("resident_dual", "api"), ("on_demand", "on_demand")):
+            with patch.dict(os.environ, {"IMAGE_TOOLS_ROLE": role, "IMAGE_TOOLS_EXECUTION_MODE": mode}):
+                self.assertEqual(404, self.app.internal_health().status_code)
+                response = asyncio.run(self.app.internal_process_image(FakeUpload(png_bytes())))
+                self.assertEqual(404, response.status_code)
+
+    def test_ingress_health_rejects_unready_malformed_and_wrong_role_workers(self):
+        for extra in ({"ready": False, "reason": "model_load_failed"}, {"ready": "true"}, {"role": "colorize"}, {"loaded_models": ["/models/private"]}):
+            with self.subTest(extra=extra), patch("requests.get", return_value=SimpleNamespace(status_code=200, json=lambda: self.worker_health("upscale", **extra))), patch("requests.post") as post:
+                result = self.app.health()
+                response = self.request()
+            self.assertFalse(result["ready"])
+            self.assertEqual(503, response.status_code)
+            self.assertNotIn("private", json.dumps(result))
+            post.assert_not_called()
+
+    def test_ingress_health_filters_non_numeric_memory_and_private_reasons(self):
+        payload = self.worker_health("upscale", ready=False, reason="/models/private", torch_allocated_mb="private", torch_reserved_mb=float("nan"), resident_vram_mb=999999)
+        with patch("requests.get", return_value=SimpleNamespace(status_code=200, json=lambda: payload)):
+            result = self.app.health()["workers"]["upscale"]
+        self.assertEqual(0, result["torch_allocated_mb"])
+        self.assertEqual(0, result["torch_reserved_mb"])
+        self.assertEqual(3072, result["resident_vram_mb"])
+        self.assertEqual("runtime_not_ready", result["reason"])
+
+    def test_worker_health_reports_torch_memory_without_loading_or_clearing(self):
+        torch = SimpleNamespace(cuda=SimpleNamespace(is_available=lambda: True, memory_allocated=lambda: 1048576, memory_reserved=lambda: 2097152))
+        with patch.dict(os.environ, {"IMAGE_TOOLS_ROLE": "upscale"}), patch.dict(sys.modules, {"torch": torch}), patch.object(model_runtime, "build_upsampler") as build, patch.object(self.app, "_release_model_caches") as release:
+            result = self.app.internal_health()
+        self.assertEqual(1.0, result["torch_allocated_mb"])
+        self.assertEqual(2.0, result["torch_reserved_mb"])
+        self.assertEqual({"role", "ready", "loaded_models", "resident_vram_mb", "torch_allocated_mb", "torch_reserved_mb"}, set(result) - {"reason"})
+        build.assert_not_called()
+        release.assert_not_called()
+
+    def test_ingress_validates_images_and_forms_before_forwarding(self):
+        with patch("requests.get", side_effect=self.health_response), patch("requests.post") as post:
+            for data, kwargs, expected in ((b"invalid", {}, "invalid_image"), (png_bytes((2001, 2000)), {}, "invalid_image"), (png_bytes(), {"model": "unknown"}, "invalid_model"), (png_bytes(), {"backend": "invalid"}, "invalid_backend"), (png_bytes(), {"outscale": "5"}, "invalid_request")):
+                with self.subTest(expected=expected):
+                    response = asyncio.run(self.app.process_image(FakeUpload(data), operation="upscale", **kwargs))
+                    self.assertEqual(400, response.status_code)
+                    self.assertEqual(expected, json.loads(response.body)["error"])
+        post.assert_not_called()
+
+    def test_ingress_health_requires_both_workers_and_sanitizes_their_payloads(self):
+        def probe(url, **kwargs):
+            role = "upscale" if "upscale" in url else "colorize"
+            payload = self.worker_health(role, private_path="/models/private", url=url)
+            return SimpleNamespace(status_code=200, json=lambda: payload)
+        with patch("requests.get", side_effect=probe) as get:
+            result = self.app.health()
+        self.assertTrue(result["ready"])
+        self.assertEqual("api", result["role"])
+        self.assertEqual(4096, result["resident_vram_mb"])
+        self.assertEqual({role: self.worker_health(role) for role in ("upscale", "colorize")}, result["workers"])
+        self.assertEqual(2, get.call_count)
+        self.assertNotIn("http", json.dumps(result))
+        self.assertNotIn("private", json.dumps(result))
+        with patch("requests.get", side_effect=[self.health_response("upscale"), requests.ConnectionError("private")]):
+            result = self.app.health()
+        self.assertFalse(result["ready"])
+        self.assertFalse(result["runtime_ready"])
+        self.assertEqual("runtime_not_ready", result["workers"]["colorize"]["reason"])
+
+    def test_worker_startup_failure_stays_unready_without_request_reload(self):
+        async def scenario():
+            async with self.started():
+                self.assertFalse(self.app.health()["ready"])
+                self.assertEqual("model_not_present", self.app.health()["reason"])
+                response = await self.app.process_image(FakeUpload(png_bytes()), operation="upscale")
+                self.assertEqual(503, response.status_code)
+                self.assertEqual("runtime_not_ready", json.loads(response.body)["error"])
+        with patch.dict(os.environ, {"IMAGE_TOOLS_ROLE": "upscale"}), patch.object(self.app, "cuda_available", return_value=True), patch.object(self.app, "verify_ready", side_effect=model_runtime.ModelRuntimeError("model_not_present")), patch.object(model_runtime, "build_upsampler") as build:
+            asyncio.run(scenario())
+        build.assert_not_called()
+
+    def test_invalid_role_and_execution_mode_fail_startup(self):
+        async def scenario():
+            async with self.started():
+                pass
+        for env in ({"IMAGE_TOOLS_ROLE": "typo"}, {"IMAGE_TOOLS_EXECUTION_MODE": "typo"}, {"IMAGE_TOOLS_EXECUTION_MODE": "on_demand", "IMAGE_TOOLS_ROLE": "upscale"}):
+            with self.subTest(env=env), patch.dict(os.environ, env), self.assertRaisesRegex(ValueError, "IMAGE_TOOLS"):
+                asyncio.run(scenario())
+
+    def test_ingress_startup_never_builds_models(self):
+        async def scenario():
+            async with self.started():
+                pass
+        with patch.object(model_runtime, "build_upsampler") as upscale, patch.object(colorize_runtime, "build_colorizer") as color:
+            asyncio.run(scenario())
+        upscale.assert_not_called()
+        color.assert_not_called()
 
 
 class ProvisionTest(unittest.TestCase):
