@@ -235,8 +235,31 @@ hub_test('image-tools resident start enables only after aggregate ingress readin
     });
 });
 
+hub_test('image-tools repeated resident start preserves running state without another admission', function (): void {
+    hub_test_image_tools_start_fixture(static function (PDO $db, array $service, string $dir): void {
+        file_put_contents($dir . '/running', 'running');
+        $gpuProbes = 0;
+        $gpuProbe = static function () use (&$gpuProbes): array {
+            $gpuProbes++;
+            return ['free_vram_mb' => 1000];
+        };
+        $healthProbe = static function (): array { throw new RuntimeException('already-running refusal must not recheck preload'); };
+        foreach ([true, false] as $enabled) {
+            hub_set_service_enabled($db, (string)$service['mode'], $enabled);
+            hub_update_service_status($db, (int)$service['id'], $enabled ? 'running' : 'error');
+            $result = hub_start_service_with_job($db, $service, null, $gpuProbe, $healthProbe, 0);
+            hub_test_assert($result['exit_code'] !== 0 && ($result['reason'] ?? '') === 'service_already_running', 'running project must receive an explicit already-running refusal, including after failed preload');
+            $after = hub_get_service($db, (int)$service['id']);
+            hub_test_assert((int)$after['enabled'] === (int)$enabled && $after['runtime_status'] === 'running' && $after['status'] === 'running', 'refusal must preserve enabled state and the actual running status, never mark a live project stopped');
+        }
+        $commands = (string)file_get_contents($dir . '/commands');
+        hub_test_assert($gpuProbes === 0, 'existing resident occupancy must not trigger a second GPU capacity probe');
+        hub_test_assert(!str_contains($commands, 'image inspect') && !str_contains($commands, ' build') && !str_contains($commands, ' up -d'), 'repeated Start must not inspect/build/recreate the running project');
+    });
+});
+
 hub_test('image-tools failed or timed-out resident health cannot report successful start', function (): void {
-    hub_test_image_tools_start_fixture(static function (PDO $db, array $service): void {
+    hub_test_image_tools_start_fixture(static function (PDO $db, array $service, string $dir): void {
         foreach ([
             ['status' => 200, 'curl_result' => CURLE_OK, 'body' => '{"ok":true,"ready":false,"workers":{"colorize":{"ready":false}}}'],
             ['status' => 0, 'curl_result' => CURLE_OPERATION_TIMEDOUT, 'body' => ''],
@@ -245,6 +268,8 @@ hub_test('image-tools failed or timed-out resident health cannot report successf
             ['status' => 200, 'curl_result' => CURLE_OK, 'body' => '{"ok":true,"ready":true}'],
             ['status' => 200, 'curl_result' => CURLE_OK, 'body' => '{"ok":true,"ready":true,"workers":{"upscale":{"ready":true},"colorize":{"ready":false}}}'],
         ] as $probe) {
+            @unlink($dir . '/running');
+            hub_update_service_status($db, (int)$service['id'], 'stopped');
             $result = hub_start_service_with_job($db, $service, null, static fn (): array => ['free_vram_mb' => 4352], static fn (): array => [(int)$service['id'] => $probe], 0);
             hub_test_assert($result['exit_code'] !== 0 && ($result['reason'] ?? '') === 'runtime_not_ready', 'failed, incomplete or timed-out preload must return a non-zero start result');
             $after = hub_get_service($db, (int)$service['id']);

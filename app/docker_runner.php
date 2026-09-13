@@ -2305,6 +2305,15 @@ function hub_start_service_with_job(PDO $db, array $service, ?array $job, ?calla
     }
     hub_refresh_service_status($db, $service);
     $service = hub_get_service($db, (int)$service['id']) ?: $service;
+    if (($service['pack_id'] ?? '') === 'image-tools' && ($service['status'] ?? '') === 'running') {
+        $settings = hub_service_settings_values($db, $service);
+        if (($settings['IMAGE_TOOLS_EXECUTION_MODE'] ?? '') === 'resident_dual' && ($settings['IMAGE_TOOLS_USE_GPU'] ?? '') === '1') {
+            $message = 'Image Tools resident project is already running. Stop it before starting again.';
+            $result = ['exit_code' => 2, 'reason' => 'service_already_running', 'stdout' => '', 'stderr' => $message, 'output' => $message];
+            hub_add_service_log($db, (int)$service['id'], 'start', $message, $result['exit_code']);
+            return $result;
+        }
+    }
     if (empty($service['local_port']) && ($service['port_mode'] ?? 'auto') === 'auto') {
         hub_update_service_port($db, (int)$service['id'], hub_allocate_local_port($db));
         $service = hub_get_service($db, (int)$service['id']) ?: $service;
