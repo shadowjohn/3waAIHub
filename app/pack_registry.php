@@ -210,6 +210,49 @@ function hub_image_tools_operation_route_definition(string $operation, string $b
     };
 }
 
+function hub_image_tools_resident_vram_budget(array $settings): int
+{
+    $schema = hub_get_pack_settings_schema('image-tools');
+    $total = 0;
+    foreach (['IMAGE_TOOLS_UPSCALE_RESIDENT_VRAM_MB', 'IMAGE_TOOLS_COLORIZE_RESIDENT_VRAM_MB'] as $key) {
+        $total += (int)hub_validate_service_setting_value($schema[$key], (string)($settings[$key] ?? ''));
+    }
+
+    return $total;
+}
+
+function hub_image_tools_resident_start_preflight(PDO $db, array $service, ?callable $gpuProbe = null): array
+{
+    $skip = ['ok' => true, 'reason' => null, 'skipped' => true];
+    if (($service['pack_id'] ?? '') !== 'image-tools') {
+        return $skip;
+    }
+    $settings = hub_service_settings_values($db, $service);
+    $schema = hub_get_pack_settings_schema('image-tools');
+    try {
+        foreach (['IMAGE_TOOLS_EXECUTION_MODE', 'IMAGE_TOOLS_USE_GPU'] as $key) {
+            $settings[$key] = hub_validate_service_setting_value($schema[$key], (string)($settings[$key] ?? ''));
+        }
+        if ($settings['IMAGE_TOOLS_EXECUTION_MODE'] !== 'resident_dual' || $settings['IMAGE_TOOLS_USE_GPU'] !== '1') {
+            return $skip;
+        }
+        $required = hub_image_tools_resident_vram_budget($settings);
+    } catch (InvalidArgumentException $error) {
+        return ['ok' => false, 'reason' => 'invalid_service_settings', 'message' => $error->getMessage()];
+    }
+    $margin = max(0, (int)hub_get_storage_setting($db, 'AIHUB_GPU_VRAM_SAFETY_MARGIN_MB'));
+    $probe = ($gpuProbe ?? 'hub_runtime_gpu_probe')();
+    $result = hub_runtime_gpu_preflight_result([], $required, $margin, $probe);
+    if (isset($probe['probe_error'])) {
+        $result['ok'] = false;
+        $result['reason'] = 'gpu_probe_failed';
+    } elseif (!$result['ok']) {
+        $result['reason'] = 'resident_vram_insufficient';
+    }
+
+    return $result + ['safety_margin_mb' => $margin, 'skipped' => false];
+}
+
 function hub_image_tools_cached_gpu_probe(PDO $db): array
 {
     $snapshot = hub_latest_host_metric_snapshot($db);

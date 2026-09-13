@@ -98,6 +98,176 @@ hub_test('image-tools allows enough time for a first image build', function (): 
     hub_test_assert(hub_service_build_timeout_sec($service) === 1800, 'image-tools first build must allow time for its CUDA dependencies and image export');
 });
 
+hub_test('image-tools resident budget validates settings before summing reservations', function (): void {
+    hub_test_assert(function_exists('hub_image_tools_resident_vram_budget'), 'resident VRAM budget helper must exist');
+    $db = hub_test_reset_db();
+    $service = hub_test_image_tools_service($db);
+    $settings = hub_service_settings_values($db, $service);
+    hub_test_assert(hub_image_tools_resident_vram_budget($settings) === 4096, 'default reservation must be 3072 + 1024 MiB');
+    $settings['IMAGE_TOOLS_UPSCALE_RESIDENT_VRAM_MB'] = '2048';
+    $settings['IMAGE_TOOLS_COLORIZE_RESIDENT_VRAM_MB'] = '512';
+    hub_test_assert(hub_image_tools_resident_vram_budget($settings) === 2560, 'custom valid reservations must change the total');
+    foreach (['', '-1', 'abc', '1.5', null] as $invalid) {
+        $bad = $settings;
+        $bad['IMAGE_TOOLS_COLORIZE_RESIDENT_VRAM_MB'] = $invalid;
+        if ($invalid === null) {
+            unset($bad['IMAGE_TOOLS_COLORIZE_RESIDENT_VRAM_MB']);
+        }
+        try {
+            hub_image_tools_resident_vram_budget($bad);
+            throw new RuntimeException('invalid or missing resident reservation must fail closed');
+        } catch (InvalidArgumentException $error) {
+            hub_test_assert(str_contains($error->getMessage(), 'IMAGE_TOOLS_COLORIZE_RESIDENT_VRAM_MB'), 'existing settings validation must identify the invalid key');
+        }
+    }
+});
+
+hub_test('image-tools resident admission honors margin, sanitized occupants, probe failures and skips', function (): void {
+    hub_test_assert(function_exists('hub_image_tools_resident_start_preflight'), 'resident start preflight helper must exist');
+    $db = hub_test_reset_db();
+    $service = hub_test_image_tools_service($db);
+    hub_set_storage_setting($db, 'AIHUB_GPU_VRAM_SAFETY_MARGIN_MB', '256');
+    $details = [
+        ['pid' => 42, 'process_name' => 'python', 'used_vram_mb' => 1024, 'classification' => 'managed_service', 'secret' => 'private'],
+        ['pid' => 43, 'process_name' => "bad\nname", 'used_vram_mb' => 512],
+    ];
+    $result = hub_image_tools_resident_start_preflight($db, $service, static fn (): array => [
+        'free_vram_mb' => 4096, 'processes' => [42, 43], 'process_details' => $details,
+    ]);
+    hub_test_assert($result['ok'] === false && $result['reason'] === 'resident_vram_insufficient', 'bare reservation must fail with a positive margin regardless of other occupants');
+    hub_test_assert($result['required_vram_mb'] === 4096 && $result['free_vram_mb'] === 4096 && $result['safety_margin_mb'] === 256, 'failure must expose reservation, free VRAM and safety margin');
+    hub_test_assert($result['gpu_processes'] === [array_diff_key($details[0], ['secret' => true])], 'resident diagnostics must reuse process sanitization');
+    $ready = hub_image_tools_resident_start_preflight($db, $service, static fn (): array => ['free_vram_mb' => 4352]);
+    hub_test_assert($ready['ok'] === true && empty($ready['skipped']), 'reservation plus margin must admit the start');
+    $failed = hub_image_tools_resident_start_preflight($db, $service, static fn (): array => ['free_vram_mb' => 9000, 'probe_error' => 'gpu_probe_failed']);
+    hub_test_assert($failed['ok'] === false, 'a failed fresh probe must not admit a start');
+    $noProbe = static function (): array { throw new RuntimeException('skipped resident admission must not probe the GPU'); };
+    foreach ([['IMAGE_TOOLS_EXECUTION_MODE' => 'on_demand'], ['IMAGE_TOOLS_EXECUTION_MODE' => 'resident_dual', 'IMAGE_TOOLS_USE_GPU' => '0']] as $values) {
+        hub_update_service_settings($db, (int)$service['id'], $values);
+        $skip = hub_image_tools_resident_start_preflight($db, $service, $noProbe);
+        hub_test_assert($skip['ok'] === true && $skip['skipped'] === true, 'on-demand and GPU-disabled starts must skip admission');
+    }
+    $skip = hub_image_tools_resident_start_preflight($db, ['pack_id' => 'hello'], $noProbe);
+    hub_test_assert($skip['ok'] === true && $skip['skipped'] === true, 'generic services must skip admission');
+});
+
+function hub_test_image_tools_start_fixture(callable $callback): void
+{
+    if (hub_platform_id() === 'windows') {
+        hub_test_skip('Direct Linux Docker lifecycle is unavailable on Windows control-plane hosts.');
+    }
+    hub_test_with_image_tools_runtime_ready(static function () use ($callback): void {
+        $db = hub_test_reset_db();
+        $service = hub_install_pack($db, 'image-tools', [
+            'service_key' => 'image-tools-main', 'port_mode' => 'manual', 'local_port' => hub_allocate_local_port($db),
+        ])['service'];
+        hub_set_storage_setting($db, 'AIHUB_GPU_VRAM_SAFETY_MARGIN_MB', '256');
+        $dir = sys_get_temp_dir() . '/3waaihub_image_tools_start_' . bin2hex(random_bytes(8));
+        mkdir($dir, 0700);
+        file_put_contents($dir . '/docker', <<<'SH'
+#!/bin/sh
+printf '%s\n' "$*" >> "$MOCK_DOCKER_LOG"
+case " $* " in
+  *" up -d "*) touch "$MOCK_DOCKER_STATE" ;;
+  *" ps "*) test ! -f "$MOCK_DOCKER_STATE" || echo "running" ;;
+esac
+exit 0
+SH
+        );
+        chmod($dir . '/docker', 0755);
+        $saved = [];
+        foreach (['AIHUB_TEST_DOCKER_BIN' => $dir . '/docker', 'MOCK_DOCKER_LOG' => $dir . '/commands', 'MOCK_DOCKER_STATE' => $dir . '/running'] as $key => $value) {
+            $saved[$key] = getenv($key);
+            putenv($key . '=' . $value);
+        }
+        try {
+            $callback($db, $service, $dir);
+        } finally {
+            foreach ($saved as $key => $value) {
+                putenv($value === false ? $key : $key . '=' . $value);
+            }
+            foreach (['docker', 'commands', 'running'] as $file) {
+                @unlink($dir . '/' . $file);
+            }
+            @rmdir($dir);
+        }
+    });
+}
+
+hub_test('image-tools insufficient resident start stops before image build or Compose up', function (): void {
+    hub_test_image_tools_start_fixture(static function (PDO $db, array $service, string $dir): void {
+        $other = hub_get_service_by_key($db, 'hello-main');
+        hub_set_service_enabled($db, (string)$other['mode'], true);
+        hub_update_service_status($db, (int)$other['id'], 'running');
+        $before = hub_get_service($db, (int)$other['id']);
+        $result = hub_start_service_with_job($db, $service, null, static fn (): array => ['free_vram_mb' => 1000]);
+        hub_test_assert($result['exit_code'] !== 0 && ($result['reason'] ?? '') === 'resident_vram_insufficient', 'shared start boundary must refuse insufficient resident VRAM');
+        hub_test_assert($result['required_vram_mb'] === 4096 && $result['free_vram_mb'] === 1000 && $result['safety_margin_mb'] === 256, 'start result must retain budget facts');
+        $commands = (string)file_get_contents($dir . '/commands');
+        hub_test_assert(!str_contains($commands, 'image inspect') && !str_contains($commands, ' build') && !str_contains($commands, ' up -d'), 'admission must precede image inspection, build and Compose up');
+        hub_test_assert(!str_contains($commands, ' down') && !str_contains($commands, ' stop') && !str_contains($commands, ' kill'), 'admission must not evict any residents');
+        $after = hub_get_service($db, (int)$service['id']);
+        hub_test_assert((int)$after['enabled'] === 0 && $after['runtime_status'] === 'stopped' && $after['status'] === 'stopped', 'rejected service must remain disabled and stopped');
+        hub_test_assert(hub_get_service($db, (int)$other['id']) === $before, 'other services must remain untouched');
+        $logs = array_values(array_filter(hub_list_service_logs($db, (int)$service['id']), static fn (array $row): bool => $row['action'] === 'start'));
+        hub_test_assert(count($logs) === 1 && str_contains($logs[0]['output'], 'resident_vram_insufficient') && strlen($logs[0]['output']) < 16384, 'rejection must produce one bounded start log');
+    });
+});
+
+hub_test('image-tools resident start enables only after aggregate ingress readiness', function (): void {
+    hub_test_image_tools_start_fixture(static function (PDO $db, array $service, string $dir): void {
+        $probes = 0;
+        $gpuProbes = 0;
+        $healthProbe = static function (array $services) use ($db, $service, &$probes): array {
+            hub_test_assert((int)hub_get_service($db, (int)$service['id'])['enabled'] === 0, 'resident must stay disabled during preload');
+            hub_test_assert($services[0]['health_url'] === $service['health_url'], 'startup must probe the existing loopback ingress URL');
+            $ready = ++$probes > 1;
+            return [(int)$service['id'] => ['status' => 200, 'curl_result' => CURLE_OK, 'body' => json_encode([
+                'ok' => true, 'ready' => $ready, 'workers' => ['upscale' => ['ready' => true], 'colorize' => ['ready' => $ready]],
+            ])]];
+        };
+        $gpuProbe = static function () use (&$gpuProbes): array { $gpuProbes++; return ['free_vram_mb' => 4352]; };
+        $result = hub_start_service_with_job($db, $service, null, $gpuProbe, $healthProbe, 3);
+        hub_test_assert($result['exit_code'] === 0 && $probes === 2 && $gpuProbes === 1, 'fresh admission and aggregate readiness must precede success');
+        $after = hub_get_service($db, (int)$service['id']);
+        hub_test_assert((int)$after['enabled'] === 1 && $after['runtime_status'] === 'running', 'ready resident must be enabled and running');
+        hub_test_assert(str_contains((string)file_get_contents($dir . '/commands'), ' up -d'), 'sufficient admission must reach normal Compose start');
+    });
+});
+
+hub_test('image-tools failed or timed-out resident health cannot report successful start', function (): void {
+    hub_test_image_tools_start_fixture(static function (PDO $db, array $service): void {
+        foreach ([
+            ['status' => 200, 'curl_result' => CURLE_OK, 'body' => '{"ok":true,"ready":false,"workers":{"colorize":{"ready":false}}}'],
+            ['status' => 0, 'curl_result' => CURLE_OPERATION_TIMEDOUT, 'body' => ''],
+            ['status' => 500, 'curl_result' => CURLE_OK, 'body' => '{"ok":true,"ready":true}'],
+            ['status' => 200, 'curl_result' => CURLE_OK, 'body' => '{"ok":true}'],
+            ['status' => 200, 'curl_result' => CURLE_OK, 'body' => '{"ok":true,"ready":true}'],
+            ['status' => 200, 'curl_result' => CURLE_OK, 'body' => '{"ok":true,"ready":true,"workers":{"upscale":{"ready":true},"colorize":{"ready":false}}}'],
+        ] as $probe) {
+            $result = hub_start_service_with_job($db, $service, null, static fn (): array => ['free_vram_mb' => 4352], static fn (): array => [(int)$service['id'] => $probe], 0);
+            hub_test_assert($result['exit_code'] !== 0 && ($result['reason'] ?? '') === 'runtime_not_ready', 'failed, incomplete or timed-out preload must return a non-zero start result');
+            $after = hub_get_service($db, (int)$service['id']);
+            hub_test_assert((int)$after['enabled'] === 0 && $after['runtime_status'] === 'error', 'partial resident must remain disabled with visible error status');
+            hub_test_assert(str_contains(hub_list_service_logs($db, (int)$service['id'])[0]['output'], 'runtime_not_ready'), 'preload failure must remain visible in service logs');
+        }
+    });
+});
+
+hub_test('image-tools on-demand and CPU starts preserve generic Compose lifecycle', function (): void {
+    hub_test_image_tools_start_fixture(static function (PDO $db, array $service): void {
+        $unexpected = static function (): array { throw new RuntimeException('non-resident starts must skip GPU and resident health probes'); };
+        foreach ([['IMAGE_TOOLS_EXECUTION_MODE' => 'on_demand'], ['IMAGE_TOOLS_EXECUTION_MODE' => 'resident_dual', 'IMAGE_TOOLS_USE_GPU' => '0']] as $values) {
+            hub_update_service_settings($db, (int)$service['id'], $values);
+            $result = hub_start_service_with_job($db, $service, null, $unexpected, $unexpected, 0);
+            hub_test_assert($result['exit_code'] === 0 && (int)hub_get_service($db, (int)$service['id'])['enabled'] === 1, 'non-resident configuration must retain normal start behavior: ' . json_encode($result));
+        }
+        $generic = hub_get_service_by_key($db, 'hello-main');
+        $result = hub_start_service_with_job($db, $generic, null, $unexpected, $unexpected, 0);
+        hub_test_assert($result['exit_code'] === 0, 'generic service starts must be unaffected');
+    });
+});
+
 hub_test('image-tools gateway injects query operations and stages Base64 without forwarding it', function (): void {
     $db = hub_test_reset_db();
     hub_test_image_tools_service($db);

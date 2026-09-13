@@ -2281,7 +2281,7 @@ function hub_start_service(PDO $db, array $service): array
     return hub_start_service_with_job($db, $service, null);
 }
 
-function hub_start_service_with_job(PDO $db, array $service, ?array $job): array
+function hub_start_service_with_job(PDO $db, array $service, ?array $job, ?callable $gpuProbe = null, ?callable $healthProbe = null, int $startupTimeoutSeconds = 300): array
 {
     $notReady = hub_service_pack_runtime_not_ready_result($service);
     if ($notReady !== null) {
@@ -2324,6 +2324,20 @@ function hub_start_service_with_job(PDO $db, array $service, ?array $job): array
         return $result;
     }
 
+    $admission = hub_image_tools_resident_start_preflight($db, $service, $gpuProbe);
+    if (!$admission['ok']) {
+        $message = substr((string)json_encode($admission, JSON_UNESCAPED_SLASHES | JSON_INVALID_UTF8_SUBSTITUTE), 0, 16384);
+        $result = ['exit_code' => 5, 'stdout' => '', 'stderr' => $message, 'output' => $message] + $admission;
+        hub_add_service_log($db, (int)$service['id'], 'start', $message, $result['exit_code']);
+        hub_set_service_enabled($db, $service['mode'], false);
+        hub_update_service_status($db, (int)$service['id'], 'stopped');
+        return $result;
+    }
+    $resident = empty($admission['skipped']);
+    if ($resident) {
+        hub_set_service_enabled($db, $service['mode'], false);
+    }
+
     hub_job_progress($db, $job, 'check_image_cache', 10, 'Checking Docker image: ' . hub_service_image_tag($service));
     if (!hub_service_image_exists($service)) {
         if (hub_get_storage_setting($db, 'AIHUB_AUTO_BUILD_MISSING_IMAGE') !== '1') {
@@ -2337,6 +2351,32 @@ function hub_start_service_with_job(PDO $db, array $service, ?array $job): array
 
     hub_job_progress($db, $job, 'docker_up', 80, 'Starting container.');
     $result = hub_run_service_compose_command($db, $job, $service, ['up', '-d'], 10, 'docker_up', 80, 89);
+    if ($result['exit_code'] === 0 && $resident) {
+        hub_job_progress($db, $job, 'health_check', 90, 'Waiting for both Image Tools resident workers.');
+        $deadline = microtime(true) + max(0, min(300, $startupTimeoutSeconds));
+        $ready = false;
+        if (hub_service_health_url_allowed((string)$service['health_url'])) {
+            do {
+                $probes = ($healthProbe ?? 'hub_service_health_probe_services')([$service]);
+                $probe = $probes[(int)$service['id']] ?? [];
+                $payload = json_decode((string)($probe['body'] ?? ''), true);
+                $ready = (hub_service_health_entry_from_probe($probe)['ready'] ?? false)
+                    && ($payload['ready'] ?? null) === true
+                    && ($payload['workers']['upscale']['ready'] ?? null) === true
+                    && ($payload['workers']['colorize']['ready'] ?? null) === true;
+                if ($ready || microtime(true) >= $deadline) {
+                    break;
+                }
+                usleep((int)(min(0.5, max(0, $deadline - microtime(true))) * 1_000_000));
+            } while (microtime(true) < $deadline);
+        }
+        if (!$ready) {
+            $result['exit_code'] = 6;
+            $result['reason'] = 'runtime_not_ready';
+            $result['stderr'] = trim($result['stderr'] . "\nruntime_not_ready: Image Tools resident workers did not become ready before the startup deadline.");
+            $result['output'] = trim($result['output'] . "\n" . $result['stderr']);
+        }
+    }
     hub_add_service_log($db, (int)$service['id'], 'start', $result['output'], (int)$result['exit_code']);
     if ($result['exit_code'] === 0) {
         hub_set_service_enabled($db, $service['mode'], true);
