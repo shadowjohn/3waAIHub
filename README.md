@@ -1230,7 +1230,7 @@ L5 缺 checkpoint 時 `/health` 會 `ready=false` 並回 `model_not_present`；�
 `image-tools` 是「影像工具」Pack，可用獨立 operation 擴充本機影像處理；提供 Real-ESRGAN 單張圖片放大與 DDColor 黑白變彩色。Real-ESRGAN 已為 `L5-benchmark-ready`／`runtime_ready=true`；DDColor 使用另一份離線、checksum 驗證的 ModelScope snapshot，色彩化輸出是 AI 推測，不能當作歷史真實顏色。
 
 ```bash
-docker compose -f data/services/image-tools-main/docker-compose.generated.yml exec -T image-tools python3 /app/model_smoke.py --backend cpu
+docker compose -f data/services/image-tools-main/docker-compose.generated.yml exec -T image-tools-upscale python3 /app/model_smoke.py --backend cuda
 php scripts/benchmark.php --service=image-tools-main --case=image_tools_cuda_upscale_golden
 php scripts/benchmark.php --service=image-tools-main --case=image_tools_cpu_upscale_golden
 ```

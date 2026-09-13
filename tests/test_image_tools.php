@@ -1283,6 +1283,9 @@ hub_test('image-tools publishes bounded Playground and documentation contracts',
     foreach (['resident_dual', 'on_demand', '3072 MiB', '1024 MiB', '4096 MiB', 'safety margin', 'ingress /health', 'worker health', 'resident_vram_insufficient', 'image-tools', 'image-tools-upscale', 'image-tools-colorize', 'evidence 不記錄 image、Token、Base64 或 private path'] as $needle) {
         hub_test_assert(str_contains($readme . "\n" . $runbookText, $needle), 'image-tools resident documentation is missing ' . $needle);
     }
+    hub_test_assert(str_contains($readme, 'exec -T image-tools-upscale python3 /app/model_smoke.py --backend cuda')
+        && str_contains($runbookText, 'exec -T image-tools-upscale python3 /app/model_smoke.py --backend cuda')
+        && !str_contains($readme . "\n" . $runbookText, 'exec -T image-tools python3 /app/model_smoke.py'), 'resident CUDA smoke documentation must use only the internal upscale worker selector');
     foreach (['ready.json', 'SHA-256', 'Docker', 'CUDA', 'GPU-first', 'CPU', 'upscale_task', 'colorize', 'DDColor', 'task_status', 'artifact', 'cancellation', 'cleanup', 'rollback', 'retention', 'L4a-model-init-smoke'] as $needle) {
         hub_test_assert(str_contains($runbookText, $needle), 'image-tools runbook is missing ' . $needle);
     }

@@ -57,7 +57,7 @@ nvidia-smi
 影像工具目前已完成 `L4a-model-init-smoke`：此階段只證明 marker 與三個 Real-ESRGAN model family 可在已安裝 runtime 中初始化，並不宣稱 HTTP 實際推論或 benchmark 品質。
 
 ```bash
-docker compose -f data/services/image-tools-main/docker-compose.generated.yml exec -T image-tools python3 /app/model_smoke.py --backend cpu
+docker compose -f data/services/image-tools-main/docker-compose.generated.yml exec -T image-tools-upscale python3 /app/model_smoke.py --backend cuda
 ```
 
 命令必須只成功回傳 compact JSON；可稽核的安全 evidence 欄位為 date、image tag、exit result、backend、commit、loaded family IDs、aliases、elapsed time。完整 redacted record 見 [image-tools-acceptance.md](image-tools-acceptance.md)，其中不保存來源圖片或推論輸出。
