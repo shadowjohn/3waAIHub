@@ -4972,7 +4972,7 @@ function hub_cluster_refresh_worker_output_line(array $station): string
     }
     if (
         $lastError !== ''
-        && !in_array($lastError, ['refreshing', 'manifest_invalid', 'station_auth_failed', 'manifest_fetch_failed', 'status_fetch_failed', 'status_invalid'], true)
+        && !in_array($lastError, ['refreshing', 'manifest_invalid', 'station_auth_failed', 'manifest_fetch_failed', 'manifest_too_large', 'status_fetch_failed', 'status_too_large', 'status_invalid'], true)
         && preg_match('/\Astatus_http_(?:0|[1-5]\d{2})\z/D', $lastError) !== 1
     ) {
         $lastError = 'invalid';
@@ -5251,6 +5251,8 @@ function hub_cluster_refresh_station_now(PDO $db, array $station, bool $force, ?
         $fetcher ??= 'hub_cluster_default_station_fetcher';
         try {
             $manifestResponse = $fetcher(['url' => $baseUrl . 'api_manifest.json.php', 'method' => 'GET', 'headers' => []]);
+        } catch (LengthException) {
+            return hub_cluster_store_station_refresh_error($db, $stationId, 'manifest_too_large');
         } catch (Throwable) {
             return hub_cluster_store_station_refresh_error($db, $stationId, 'manifest_fetch_failed');
         }
@@ -5275,6 +5277,8 @@ function hub_cluster_refresh_station_now(PDO $db, array $station, bool $force, ?
                 'method' => 'GET',
                 'headers' => ['Authorization' => 'Bearer ' . $token],
             ]);
+        } catch (LengthException) {
+            return hub_cluster_store_station_refresh_error($db, $stationId, 'status_too_large');
         } catch (Throwable) {
             return hub_cluster_store_station_refresh_error($db, $stationId, 'status_fetch_failed');
         }
@@ -5328,6 +5332,7 @@ function hub_cluster_default_station_fetcher(array $request): array
         throw new RuntimeException('station refresh failed');
     }
     $body = '';
+    $tooLarge = false;
     $headers = is_array($request['headers'] ?? null) ? $request['headers'] : [];
     $configured = curl_setopt_array($handle, [
         CURLOPT_HTTPGET => true,
@@ -5337,8 +5342,10 @@ function hub_cluster_default_station_fetcher(array $request): array
         CURLOPT_TIMEOUT => 10,
         CURLOPT_FOLLOWLOCATION => false,
         CURLOPT_PROXY => '',
-        CURLOPT_WRITEFUNCTION => static function ($handle, string $chunk) use (&$body): int {
-            if (strlen($body) + strlen($chunk) > 262144) {
+        CURLOPT_WRITEFUNCTION => static function ($handle, string $chunk) use (&$body, &$tooLarge): int {
+            // Manifest 的服務說明與範例可能超過 256 KiB，仍保留 1 MiB 上限。
+            if (strlen($body) + strlen($chunk) > 1048576) {
+                $tooLarge = true;
                 return 0;
             }
             $body .= $chunk;
@@ -5349,6 +5356,9 @@ function hub_cluster_default_station_fetcher(array $request): array
     $result = $configured ? curl_exec($handle) : false;
     $status = (int)(curl_getinfo($handle, CURLINFO_RESPONSE_CODE) ?: 0);
     curl_close($handle);
+    if ($tooLarge) {
+        throw new LengthException('station response too large');
+    }
     if ($result === false) {
         throw new RuntimeException('station refresh failed');
     }

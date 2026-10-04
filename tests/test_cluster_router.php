@@ -7228,6 +7228,56 @@ hub_test('cluster admin usage helpers count submit events and keep station prese
     });
 });
 
+hub_test('cluster station fetch accepts up to 1 MiB and rejects oversized responses', function (): void {
+    if (!function_exists('curl_init') || !function_exists('proc_open')) {
+        hub_test_skip('station fetch boundary test requires cURL and proc_open');
+    }
+    $router = HUB_DATA_DIR . '/station-fetch-router.php';
+    $servers = [];
+    try {
+        file_put_contents($router, <<<'PHP'
+<?php
+header('Content-Type: application/json');
+echo str_pad('{"services":[]}', min(1048577, max(15, (int)($_GET['bytes'] ?? 15))), ' ');
+PHP);
+        $servers[] = hub_test_public_api_start_server($router);
+        $url = 'http://127.0.0.1:' . $servers[0]['port'] . '/?bytes=';
+        foreach ([262145, 1048576] as $bytes) {
+            $response = hub_cluster_default_station_fetcher(['url' => $url . $bytes]);
+            hub_test_assert($response['status'] === 200 && strlen($response['body']) === $bytes, 'station fetch must accept ' . $bytes . ' bytes');
+            hub_test_assert(hub_cluster_refresh_json_payload($response) === ['services' => []], 'accepted station response must remain valid JSON');
+        }
+        try {
+            hub_cluster_default_station_fetcher(['url' => $url . '1048577']);
+            hub_test_assert(false, 'station fetch must reject responses larger than 1 MiB');
+        } catch (LengthException $e) {
+            hub_test_assert($e->getMessage() === 'station response too large', 'oversized station response must retain its specific failure');
+        }
+    } finally {
+        hub_test_public_api_stop_servers($servers);
+        if (is_file($router)) {
+            unlink($router);
+        }
+    }
+});
+
+hub_test('cluster station refresh distinguishes oversized manifest and status responses', function (): void {
+    hub_test_with_cluster_secret(function (): void {
+        $db = hub_test_reset_db();
+        $station = hub_test_cluster_router_station($db);
+        foreach (['manifest', 'status'] as $stage) {
+            $result = hub_cluster_refresh_station_now($db, $station, true, static function (array $request) use ($stage): array {
+                if ($stage === 'manifest' || str_ends_with($request['url'], '/cluster_status.php')) {
+                    throw new LengthException('station response too large');
+                }
+                return ['status' => 200, 'body' => '{"services":[{"mode":"vision"}]}'];
+            });
+            hub_test_assert($result['last_error'] === $stage . '_too_large', 'oversized ' . $stage . ' must not be mislabeled as a connection failure');
+            hub_test_assert(str_ends_with(hub_cluster_refresh_worker_output_line($result), ' ' . $stage . '_too_large'), 'worker output must preserve the size-limit error');
+        }
+    });
+});
+
 hub_test('cluster admin child controls retain only published modes and force one station refresh', function (): void {
     hub_test_with_cluster_secret(function (): void {
         $db = hub_test_reset_db();
