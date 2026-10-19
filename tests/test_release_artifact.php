@@ -41,7 +41,8 @@ function hub_test_release_artifact_remove_tree(string $path): void
 }
 
 hub_test('release builder creates a hash-verified private deployment artifact', function (): void {
-    $releaseRoot = sys_get_temp_dir() . '/3waaihub_release_artifact_' . bin2hex(random_bytes(12));
+    // Exercise canonical path comparison even when the runner has no temp-path alias.
+    $releaseRoot = sys_get_temp_dir() . '/./3waaihub_release_artifact_' . bin2hex(random_bytes(12));
     $output = $releaseRoot . '/dist';
     $runtimeDataRoot = $releaseRoot . '/data';
     $bytecodeCache = HUB_ROOT . '/scripts/__pycache__';
@@ -137,10 +138,8 @@ hub_test('release builder creates a hash-verified private deployment artifact', 
             'release runtime files must be generated beneath the external data root',
         );
         hub_test_assert(
-            str_contains(
-                str_replace('\\', '/', (string)($runtimeService['contents'] ?? '')),
-                'SERVICE_DATA_DIR=' . str_replace('\\', '/', $expectedRuntimeDir) . PHP_EOL,
-            ),
+            preg_match_all('/^SERVICE_DATA_DIR=([^\r\n]+)\r?$/m', (string)($runtimeService['contents'] ?? ''), $dataDirMatches) === 1
+            && hub_storage_paths_equal($dataDirMatches[1][0], $expectedRuntimeDir),
             'release runtime settings must not resolve SERVICE_DATA_DIR beneath the artifact',
         );
 
