@@ -12,7 +12,7 @@ RUN apt-get update \
     && groupadd --system edge \
     && useradd --system --gid edge --home-dir /app --shell /usr/sbin/nologin edge
 
-RUN python3 -m pip install edge-tts==7.2.6
+RUN python3 -m pip install edge-tts==7.3.1
 
 COPY edge-tts-entrypoint.sh synthesize.py generate_demos.py voice_catalog.json \
     test_egress_firewall.sh test_synthesize.py test_generate_demos.py ./
