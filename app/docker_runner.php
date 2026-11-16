@@ -2597,7 +2597,7 @@ function hub_service_generated_runtime_files(PDO $db, array $service): ?array
     $realRuntimeBase = realpath($runtimeBase);
     $realRuntimeDir = realpath($runtimeDir);
     if (
-        dirname($composePath) !== $runtimeDir
+        !hub_storage_paths_equal(dirname($composePath), $runtimeDir)
         || $realRuntimeBase === false
         || $realRuntimeDir === false
         || !is_dir($realRuntimeBase)
@@ -2651,7 +2651,7 @@ function hub_service_generated_runtime_cleanup_files(PDO $db, string $serviceKey
     }
 
     $composePath = hub_path(hub_pack_compose_file($db, $serviceKey));
-    if (dirname($composePath) !== $runtimeDir) {
+    if (!hub_storage_paths_equal(dirname($composePath), $runtimeDir)) {
         return null;
     }
     $files = [$composePath, hub_runtime_settings_path($runtimeDir)];
