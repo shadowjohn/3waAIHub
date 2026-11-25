@@ -61,6 +61,31 @@ hub_test('Linux pulls repair unreadable release web source before PHP-FPM serves
     hub_test_assert(str_contains($installer, 'configure_git_hooks'), 'installer must enable versioned Git hooks');
 });
 
+hub_test('FLUX Pack uses GPU and a read-only model bind in Windows WSL', function (): void {
+    $db = hub_test_reset_db();
+    $installed = hub_install_pack($db, 'image-flux-klein');
+    $service = $installed['service'];
+    hub_test_assert(($service['mode'] ?? '') === 'image_generate_flux', 'FLUX API mode was not registered');
+    $target = [
+        'supported' => true,
+        'distro' => 'Ubuntu-24.04',
+        'runtime_root' => '/mnt/d/hub-runtime',
+        'models_root' => '/mnt/d/models',
+    ];
+    $profile = ['runtime_targets' => ['windows-wsl2-linux-docker' => $target]];
+    $script = hub_test_wsl_script_payload(hub_wsl_service_compose_command($service, ['up', '-d'], $profile));
+    $compose = hub_test_wsl_compose_payload($script);
+    hub_test_assert(str_contains($compose, 'gpus: all'), 'WSL Compose must request the GPU');
+    hub_test_assert(str_contains($compose, 'source: "/mnt/d/models/flux-klein-4b"'), 'Wrong WSL model path');
+    hub_test_assert(str_contains($compose, 'target: /models/flux-klein-4b'), 'Wrong container model path');
+    hub_test_assert(str_contains($compose, 'read_only: true'), 'Model mount must be read-only');
+    hub_test_assert(str_contains($compose, '"127.0.0.1:' . $service['local_port'] . ':8000"'), 'FLUX must bind locally');
+    $env = hub_test_wsl_env_payload($script);
+    hub_test_assert(str_contains($env, 'FLUX_MODEL_DIR=/models/flux-klein-4b'), 'Model directory env is missing');
+    $profile['runtime_targets']['windows-wsl2-linux-docker']['models_root'] = 'D:/models';
+    hub_test_assert(hub_test_throws(static fn () => hub_wsl_service_compose_command($service, ['up'], $profile)), 'WSL must require a POSIX model path');
+});
+
 hub_test('PhaseRuntime-0 platform and path helpers keep host and container paths separate', function (): void {
     hub_test_assert(hub_platform_id('Linux') === 'linux', 'Linux platform id mismatch');
     hub_test_assert(hub_platform_id('Windows') === 'windows', 'Windows platform id mismatch');

@@ -2112,6 +2112,19 @@ function hub_wsl_service_compose_command(array $service, array $args, ?array $pr
     $packRoot = $runtimeRoot . '/packs/' . $packId;
     $serviceRoot = $runtimeRoot . '/services/' . $serviceKey;
     $compose = "services:\n  adapter:\n    image: " . json_encode(hub_service_image_tag($service), JSON_UNESCAPED_SLASHES) . "\n    build:\n      context: " . json_encode($packRoot . '/service', JSON_UNESCAPED_SLASHES) . "\n    env_file:\n      - " . HUB_RUNTIME_SETTINGS_FILENAME . "\n    ports:\n      - \"127.0.0.1:" . $port . ":8000\"\n    restart: unless-stopped\n";
+    if ($packId === 'image-flux-klein') {
+        $resolution = hub_service_runtime_resolution($service, 'windows', $profile);
+        $modelsRoot = hub_container_path((string)($resolution['profile']['models_root'] ?? ''));
+        $compose .= "    gpus: all\n"
+            . "    environment:\n"
+            . '      NVIDIA_VISIBLE_DEVICES: "${GPU_VISIBLE_DEVICES:-all}"' . "\n"
+            . "      NVIDIA_DRIVER_CAPABILITIES: compute,utility\n"
+            . "    volumes:\n"
+            . "      - type: bind\n"
+            . '        source: ' . json_encode(rtrim($modelsRoot, '/') . '/flux-klein-4b', JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR) . "\n"
+            . "        target: /models/flux-klein-4b\n"
+            . "        read_only: true\n";
+    }
     $env = '';
     foreach ($environment as $key => $value) {
         $env .= $key . '=' . $value . "\n";

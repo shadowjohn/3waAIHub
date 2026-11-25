@@ -1,0 +1,159 @@
+{
+  "schema_version": "0.1",
+  "id": "image-flux-klein",
+  "name": "FLUX.2 klein 4B 文字生圖",
+  "version": "0.1.0",
+  "category": "vision",
+  "type": "api_service",
+  "execution_type": "sync_api",
+  "runtime_level": "L5-contract",
+  "target_level": "L5-contract",
+  "runtime_ready": true,
+  "default_mode": "image_generate_flux",
+  "description": "本機 CUDA 12.9 文字生圖，回傳 PNG。",
+  "runtime": {
+    "kind": "docker",
+    "compose_file": "docker-compose.yml",
+    "default_internal_port": 8000,
+    "windows_wsl_compose": true
+  },
+  "platform_targets": {
+    "linux-docker": true,
+    "windows-wsl2-linux-docker": true
+  },
+  "gateway": {
+    "health_path": "/health",
+    "invoke_path": "/generate",
+    "methods": [
+      "POST"
+    ],
+    "timeout_sec": 900,
+    "max_upload_mb": 1
+  },
+  "l5_contract": {
+    "endpoint": "/generate",
+    "method": "POST",
+    "content_type": "application/json",
+    "input": {
+      "fields": [
+        {
+          "name": "prompt",
+          "type": "string",
+          "required": true,
+          "max_length": 1500,
+          "example": "A miniature yellow chrysanthemum in a blue ceramic vase, watercolor."
+        },
+        {
+          "name": "width",
+          "type": "integer",
+          "default": 768,
+          "min": 256,
+          "max": 1024,
+          "multiple_of": 16
+        },
+        {
+          "name": "height",
+          "type": "integer",
+          "default": 768,
+          "min": 256,
+          "max": 1024,
+          "multiple_of": 16
+        },
+        {
+          "name": "seed",
+          "type": "integer",
+          "required": false,
+          "min": 0,
+          "max": 4294967295
+        }
+      ]
+    },
+    "output": {
+      "content_type": "image/png",
+      "required_headers": [
+        "X-3waAIHub-Model",
+        "X-3waAIHub-Device",
+        "X-3waAIHub-Elapsed-Ms",
+        "X-3waAIHub-Width",
+        "X-3waAIHub-Height"
+      ]
+    },
+    "errors": [
+      "invalid_parameter",
+      "unsupported_media_type",
+      "payload_too_large",
+      "busy",
+      "model_not_provisioned",
+      "gpu_unavailable",
+      "gpu_out_of_memory",
+      "inference_failed",
+      "gateway_timeout"
+    ],
+    "limits": {
+      "timeout_sec": 900,
+      "max_request_bytes": 16384,
+      "max_concurrency": 1
+    }
+  },
+  "hardware": {
+    "gpu_required": true,
+    "gpu_supported": true,
+    "cpu_fallback": false,
+    "min_vram_mb": 12288,
+    "recommended_vram_mb": 16384,
+    "min_compute_capability": "8.0"
+  },
+  "queue": {
+    "supported": false,
+    "default_queue": "gpu",
+    "max_concurrency": 1
+  },
+  "storage": {
+    "mounts": [
+      {
+        "type": "models",
+        "host_subdir": "flux-klein-4b",
+        "container_path": "/models/flux-klein-4b",
+        "read_only": true
+      }
+    ]
+  },
+  "settings_schema": [
+    {
+      "key": "GPU_VISIBLE_DEVICES",
+      "label": "CUDA GPU",
+      "type": "text",
+      "default": "all",
+      "required": true,
+      "restart_required": true,
+      "server_only": true
+    }
+  ],
+  "env": [
+    {
+      "name": "GPU_VISIBLE_DEVICES",
+      "default": "all",
+      "required": true
+    },
+    {
+      "name": "FLUX_MODEL_DIR",
+      "default": "/models/flux-klein-4b",
+      "required": true
+    }
+  ],
+  "preflight": {
+    "checks": [
+      "nvidia_smi",
+      "docker_gpus",
+      "storage"
+    ]
+  },
+  "service": {
+    "default_local_port": 18123,
+    "local_port_env": "FLUX_LOCAL_PORT"
+  },
+  "install": {
+    "default_service_key": "flux-klein-main",
+    "compose_project": "3waaihub_image_flux_klein"
+  }
+}

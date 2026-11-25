@@ -1,5 +1,15 @@
 # 3waAIHub History
 
+## 2026-11-25 FLUX.2 klein 4B HubPack
+
+新增 `image-flux-klein`，經既有 Hub Gateway 的 `image_generate_flux` 接收文字、尺寸與選填 seed，回傳 PNG。使用 PyTorch 2.8.0 + CUDA 12.9，Linux Docker 與 Windows WSL Runtime 都會要求 GPU，並以唯讀方式掛載已準備的模型目錄。權重固定來源 revision，準備腳本核對四個 SHA-256 後才寫入標記。
+
+本機 RTX 5060 Ti（16 GB、`sm_120`）通過 `cu129` CUDA 運算。服務端的 JSON 參數、PNG、錯誤與同時請求限制通過四項離線 API 測試。Hub Gateway PNG 轉送與 Windows WSL Compose 的 GPU、唯讀模型掛載兩項回歸通過。
+
+原生 Windows `cu129` 以同一份服務程式完成 512 × 512 PNG，耗時約 183 秒，PyTorch GPU 峰值配置為 7,990 MiB。驗收圖位於 `data/cache/flux-klein/flux-klein-cu129.png`。四個模型權重均通過 SHA-256 驗證。
+
+Docker 容器在 5060 Ti 上通過 CUDA 健康檢查並完成四步推論。Windows 的 C 槽在回傳前觸及空間保護門檻，已停止並移除測試容器，Docker 到 Hub 的實際 PNG 回傳仍待驗收。Control-plane 完整測試另有 Cluster health 與 Edge TTS 測試失敗，Cluster health 可在原始 `ef53384` 重現。
+
 ## PhaseM-2B Serving Prewarm
 
 Added YOLO CPU/GPU prewarm controls. GPU prewarm remains the existing `yolo_model_assign_gpu` / `yolo_model_unassign_gpu` flow with fixed `yolo-gpu0` slot 1/2. CPU prewarm adds `yolo_model_prewarm_cpu` / `yolo_model_unload_cpu` for one `yolo-cpu` resident model, records the deployment in `yolo_model_deployments`, exposes CPU warm status through `yolo_model_status`, and keeps `yolo_predict` as the only permission needed for ordinary inference tokens.

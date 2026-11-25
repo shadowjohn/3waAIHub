@@ -319,6 +319,25 @@ hub_test('gateway applies manifest upload limit and timeout', function (): void 
     hub_test_assert($response['status'] === 200, 'translate request should pass after content length is acceptable');
 });
 
+hub_test('FLUX service Gateway routes POST and preserves raw PNG', function (): void {
+    $db = hub_test_reset_db();
+    hub_install_pack($db, 'image-flux-klein');
+    hub_set_service_enabled($db, 'image_generate_flux', true);
+    $request = ['method' => 'POST', 'client_ip' => '127.0.0.1', 'raw_body' => '{"prompt":"a small yellow flower"}'];
+    $png = base64_decode('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMB/axgAA0AAAAASUVORK5CYII=', true);
+    $response = hub_gateway_dispatch($db, 'image_generate_flux', static function (array $service, int $timeout) use ($png): array {
+        hub_test_assert(str_ends_with((string)$service['internal_url'], '/generate'), 'wrong FLUX upstream route');
+        hub_test_assert($timeout === 900, 'wrong FLUX timeout');
+        return ['status' => 200, 'headers' => ['Content-Type: image/png'], 'body' => $png];
+    }, $request);
+    hub_test_assert($response['status'] === 200 && $response['body'] === $png, 'FLUX PNG was modified or not routed');
+    hub_test_assert(in_array('Content-Type: image/png', $response['headers'], true), 'FLUX MIME type was not preserved');
+
+    $request['method'] = 'GET';
+    $rejected = hub_gateway_dispatch($db, 'image_generate_flux', static fn () => throw new RuntimeException('GET reached FLUX'), $request);
+    hub_test_assert($rejected['status'] === 405, 'FLUX Gateway must require POST');
+});
+
 hub_test('gateway normalizes proxy exceptions and sync terminal metadata', function (): void {
     $error = hub_gateway_invoke_requester(static fn (): array => throw new RuntimeException('proxy exploded'), [], 1);
     $payload = json_decode((string)$error['body'], true);

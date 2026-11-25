@@ -1,0 +1,16 @@
+services:
+  image-flux-klein:
+    image: 3waaihub/image-flux-klein:0.1.0-cu129
+    build:
+      context: ./service
+    environment:
+      FLUX_MODEL_DIR: /models/flux-klein-4b
+      HF_HUB_OFFLINE: "1"
+      TRANSFORMERS_OFFLINE: "1"
+      NVIDIA_VISIBLE_DEVICES: "${GPU_VISIBLE_DEVICES:-all}"
+      NVIDIA_DRIVER_CAPABILITIES: compute,utility
+    gpus: all
+    ports:
+      - "127.0.0.1:${FLUX_LOCAL_PORT:-18123}:8000"
+    volumes:
+      - "${AIHUB_MODELS_DIR:-/DATA/models}/flux-klein-4b:/models/flux-klein-4b:ro"

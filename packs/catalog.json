@@ -56,6 +56,15 @@
       "featured": true
     },
     {
+      "id": "image-flux-klein",
+      "name": "FLUX.2 klein 4B 文字生圖",
+      "version": "0.1.0",
+      "category": "vision",
+      "description": "本機 CUDA 12.9 文字生圖，回傳 PNG。",
+      "path": "packs/image-flux-klein",
+      "featured": false
+    },
+    {
       "id": "image-birefnet",
       "name": "BiRefNet Background Removal Service",
       "version": "0.1.0",
